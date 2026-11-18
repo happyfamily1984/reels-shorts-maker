@@ -1,6 +1,9 @@
 // AI 대본·AI 음성 — 사용자의 Gemini API 키(Google AI Studio, 무료 등급)로 기기에서 직접 호출한다.
 const URL_ = 'https://generativelanguage.googleapis.com/v1beta/interactions';
-const TEXT_MODEL = 'gemini-3.8-flash';
+// 대본 작성에 쓸 모델. 설정에서 고른 것을 먼저 쓰고, 한도 초과·사용 불가면 나머지를 차례로 시도한다.
+export const MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
+export const getModel = () => { try { const m = localStorage.getItem('model.gemini'); return MODELS.includes(m) ? m : MODELS[0]; } catch { return MODELS[0]; } };
+const fail = (code, msg) => Object.assign(new Error(msg), { code });
 const TTS_MODEL = 'gemini-3.8-flash-tts';
 export const VOICES = ['Kore', 'Aoede', 'Leda', 'Zephyr', 'Puck', 'Charon', 'Fenrir', 'Orus'];
 
@@ -23,15 +26,32 @@ async function call(body, onWait, waits = 2) {
     last = j.error?.message || '';
     if (r.status === 429) { limited++; continue; } // 한도 초과 → 다음 키
     if (r.status === 401 || r.status === 403 || /API key/i.test(last)) { bad++; continue; } // 잘못된 키 → 다음 키
-    if (r.status === 404) throw new Error(`AI 모델(${body.model})을 찾을 수 없어요. 앱 업데이트가 필요할 수 있어요.`);
+    if (r.status === 404) throw fail('model', `AI 모델(${body.model})을 찾을 수 없어요. 앱 업데이트가 필요할 수 있어요.`);
     throw new Error(`AI 요청 실패 (${r.status}): ${last}`);
   }
   if (limited && waits > 0) { // 쓸 수 있는 키가 모두 한도에 걸림 → 잠시 기다렸다 다시
     onWait && onWait(); await sleep(20000);
     return call(body, onWait, waits - 1);
   }
-  if (limited) throw new Error(`등록된 키 ${keys.length}개가 모두 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.`);
+  if (limited) throw fail('limit', `등록된 키 ${keys.length}개가 모두 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.`);
   throw new Error(keys.length > 1 ? `등록된 Gemini API 키 ${bad}개가 모두 올바르지 않아요. 설정에서 확인해 주세요.` : 'Gemini API 키가 올바르지 않아요. 설정에서 확인해 주세요.');
+}
+
+// 대본용 호출: 고른 모델 → 나머지 모델 순으로, 각 모델마다 등록된 키를 모두 시도한다
+async function callText(body) {
+  const first = getModel(), order = [first, ...MODELS.filter((m) => m !== first)];
+  let err;
+  for (let round = 0; round < 2; round++) {
+    for (const model of order) {
+      try { return await call({ model, ...body }, null, 0); } catch (e) {
+        if (e.code !== 'limit' && e.code !== 'model') throw e; // 키 오류·네트워크 오류는 모델을 바꿔도 소용없다
+        err = e;
+      }
+    }
+    if (err.code !== 'limit' || round) break;
+    await sleep(20000); // 모든 모델·키가 한도에 걸림 → 한 번만 기다렸다 재시도
+  }
+  throw err.code === 'limit' ? new Error('모든 모델과 키가 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.') : err;
 }
 
 // 응답 안에서 원하는 종류(text/audio)의 조각을 모은다. 입력 메아리와 생각 과정은 건너뛴다.
@@ -79,8 +99,7 @@ const GUIDE = `당신은 인스타그램 릴스·유튜브 쇼츠 전문 대본 
 사실 정보가 필요한 주제에서는 확실하지 않은 수치나 고유명사를 지어내지 말고 일반적인 표현을 씁니다.`;
 
 export async function generateScript({ topic, tone, seconds }) {
-  const res = await call({
-    model: TEXT_MODEL,
+  const res = await callText({
     input: `${GUIDE}\n\n주제: ${topic}\n분위기: ${tone}\n목표 길이: 약 ${seconds}초 (내레이션 총 ${Math.round(seconds * 6)}자 안팎, 장면 ${Math.max(3, Math.round(seconds / 4))}개 안팎)`,
     response_format: { type: 'text', mime_type: 'application/json', schema: SCHEMA },
   });

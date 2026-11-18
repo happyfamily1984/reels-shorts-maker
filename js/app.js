@@ -221,15 +221,21 @@ function newSheet() {
 }
 /* ───────── 설정(API 키)·AI 대본 ───────── */
 const getKey = () => { try { return localStorage.getItem('key.gemini') || ''; } catch { return ''; } };
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
+const geminiModel = () => { try { const m = localStorage.getItem('model.gemini'); return GEMINI_MODELS.includes(m) ? m : GEMINI_MODELS[0]; } catch { return GEMINI_MODELS[0]; } };
 function settingsSheet(done) {
   const L = sheet('설정', `
     <label>Gemini API 키 — AI 대본·AI 음성용 (무료) · 여러 개면 한 줄에 하나씩</label><textarea id="k1" class="secret" rows="4" placeholder="AIza...&#10;AIza..." autocomplete="off" autocapitalize="off" spellcheck="false">${esc(getKey().split(/[\s,]+/).filter(Boolean).join('\n'))}</textarea>
     <div class="mut" style="margin-top:6px">Google AI Studio(aistudio.google.com)에 구글 계정으로 로그인 → "Get API key" → 키를 만들어 붙여넣어 주세요. 무료 등급은 하루·분당 사용 횟수에 제한이 있습니다.</div>
     <div class="mut" style="margin-top:6px">키를 여러 개 넣으면 한 키가 한도에 걸리거나 잘못됐을 때 자동으로 다음 키를 씁니다. 한도는 키가 아니라 Google 프로젝트 단위라서, 서로 다른 프로젝트(또는 계정)에서 만든 키여야 효과가 있습니다.</div>
+    <label>대본 작성 모델 — 고른 모델이 한도에 걸리면 나머지를 자동으로 차례로 씁니다</label>${chips('model', GEMINI_MODELS.map((m) => [m, m.replace('gemini-', '')]), geminiModel())}
     <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, Google로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
     <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
+  let model = geminiModel();
+  bindChips(L.el, (k, v) => { model = v; });
   wire(L, {
     ok: () => {
+      try { localStorage.setItem('model.gemini', model); } catch {}
       const v = $('#k1', L.el).value.split(/[\s,]+/).filter(Boolean).join('\n');
       try { v ? localStorage.setItem('key.gemini', v) : localStorage.removeItem('key.gemini'); } catch {}
       L.close(); toast(v ? `키 ${v.split('\n').length}개를 저장했어요` : '키를 지웠어요'); done && done();
