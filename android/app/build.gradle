@@ -1,0 +1,44 @@
+plugins { id 'com.android.application' }
+
+// 웹앱 파일(저장소 루트)을 APK 안에 그대로 넣는다 → 인터넷 없이도 실행
+def webDir = layout.buildDirectory.dir('web-assets')
+def copyWeb = tasks.register('copyWeb', Copy) {
+    from(rootProject.file('..')) {
+        include 'index.html', 'manifest.webmanifest', 'css/**', 'js/**', 'icons/**'
+    }
+    into webDir.map { it.dir('www') }
+}
+
+android {
+    namespace 'app.shortsmaker'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.shortsmaker'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+    signingConfigs {
+        release {
+            // 서명 키: SHORTS_KEYSTORE 환경변수로 지정 (같은 키로 서명해야 덮어쓰기 업데이트 가능)
+            def ks = System.getenv('SHORTS_KEYSTORE')
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('SHORTS_KEYSTORE_PASS')
+                keyAlias 'shorts'
+                keyPassword System.getenv('SHORTS_KEYSTORE_PASS')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv('SHORTS_KEYSTORE')) signingConfig signingConfigs.release
+        }
+    }
+    sourceSets { main { assets.srcDir webDir } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+tasks.named('preBuild') { dependsOn copyWeb }
+tasks.configureEach { t -> if (t.name.startsWith('merge') && t.name.endsWith('Assets')) t.dependsOn(copyWeb) }
