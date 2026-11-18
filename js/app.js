@@ -22,9 +22,23 @@ addEventListener('popstate', () => {
   history.pushState({ guard: 1 }, '');
   goBack();
 });
+// 안드로이드 앱(APK) 안에서 실행 중이면 기기 기능은 네이티브 쪽에 맡긴다
+const NATIVE = window.Android || null;
+window.__back = () => goBack(); // 기기 뒤로가기 버튼 → 네이티브가 호출
+async function nativeFile(blob, name, action) {
+  const u8 = new Uint8Array(await blob.arrayBuffer()), STEP = 3 * 256 * 1024;
+  NATIVE.fileBegin(name, blob.type || 'video/mp4');
+  for (let o = 0; o < u8.length; o += STEP) {
+    let bin = ''; const part = u8.subarray(o, o + STEP);
+    for (let i = 0; i < part.length; i += 32768) bin += String.fromCharCode.apply(null, part.subarray(i, i + 32768));
+    NATIVE.fileChunk(btoa(bin));
+  }
+  return NATIVE.fileEnd(action); // 'save' | 'share' → 결과 메시지
+}
 function goBack() { const fn = backStack.pop(); if (fn) fn(); else askExit(); }
 async function askExit() {
   if (!(await confirmDlg('앱을 종료하겠습니까?'))) return;
+  if (NATIVE) return NATIVE.exit();
   exiting = true;
   history.back();
   try { window.close(); } catch {}
@@ -206,27 +220,24 @@ function newSheet() {
   });
 }
 /* ───────── 설정(API 키)·AI 대본 ───────── */
-const getKey = (k) => { try { return localStorage.getItem('key.' + k) || ''; } catch { return ''; } };
+const getKey = () => { try { return localStorage.getItem('key.gemini') || ''; } catch { return ''; } };
 function settingsSheet(done) {
   const L = sheet('설정', `
-    <label>Claude API 키 — AI 대본 작성용</label><input type="password" id="k1" value="${esc(getKey('claude'))}" placeholder="sk-ant-..." autocomplete="off">
-    <div class="mut" style="margin-top:6px">Claude Console(platform.claude.com)에서 발급받은 키를 넣어 주세요. 사용량만큼 요금이 부과됩니다.</div>
-    <label>Google Cloud API 키 — AI 음성(TTS)용</label><input type="password" data-k="gtts" value="${esc(getKey('gtts'))}" placeholder="AIza..." autocomplete="off">
-    <div class="mut" style="margin-top:6px">Google Cloud Console에서 "Cloud Text-to-Speech API"를 사용 설정한 뒤 API 키를 발급해 넣어 주세요. 매달 무료 사용량이 있습니다.</div>
-    <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, 해당 서비스로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
+    <label>Gemini API 키 — AI 대본·AI 음성용 (무료) · 여러 개면 한 줄에 하나씩</label><textarea id="k1" class="secret" rows="4" placeholder="AIza...&#10;AIza..." autocomplete="off" autocapitalize="off" spellcheck="false">${esc(getKey().split(/[\s,]+/).filter(Boolean).join('\n'))}</textarea>
+    <div class="mut" style="margin-top:6px">Google AI Studio(aistudio.google.com)에 구글 계정으로 로그인 → "Get API key" → 키를 만들어 붙여넣어 주세요. 무료 등급은 하루·분당 사용 횟수에 제한이 있습니다.</div>
+    <div class="mut" style="margin-top:6px">키를 여러 개 넣으면 한 키가 한도에 걸리거나 잘못됐을 때 자동으로 다음 키를 씁니다. 한도는 키가 아니라 Google 프로젝트 단위라서, 서로 다른 프로젝트(또는 계정)에서 만든 키여야 효과가 있습니다.</div>
+    <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, Google로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
     <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
   wire(L, {
     ok: () => {
-      L.el.querySelectorAll('input[data-k], #k1').forEach((i) => {
-        const k = i.dataset.k || 'claude', v = i.value.trim();
-        try { v ? localStorage.setItem('key.' + k, v) : localStorage.removeItem('key.' + k); } catch {}
-      });
-      L.close(); toast('저장했어요'); done && done();
+      const v = $('#k1', L.el).value.split(/[\s,]+/).filter(Boolean).join('\n');
+      try { v ? localStorage.setItem('key.gemini', v) : localStorage.removeItem('key.gemini'); } catch {}
+      L.close(); toast(v ? `키 ${v.split('\n').length}개를 저장했어요` : '키를 지웠어요'); done && done();
     },
   });
 }
 function aiSheet(create) {
-  if (!getKey('claude')) { toast('먼저 Claude API 키를 입력해 주세요'); return settingsSheet(() => aiSheet(create)); }
+  if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(() => aiSheet(create)); }
   let tone = '정보 전달', seconds = 30, busy = false;
   const L = sheet('🤖 AI로 만들기', `
     <label>어떤 영상을 만들까요?</label><textarea id="tp" rows="3" placeholder="예) 자취생을 위한 5분 계란 요리 3가지"></textarea>
@@ -592,45 +603,40 @@ function audioSheet() {
   });
 }
 function dropTts(s) { if (s.ttsId) { s.ttsId = null; cur.mixDirty = true; } }
+const TTS_STYLES = { slow: '차분하고 천천히 또박또박 말하기', normal: '', fast: '활기차고 조금 빠르게 말하기', hype: '신나고 빠르게, 에너지 넘치게 말하기' };
 async function ttsSheet() {
-  const E = cur, p = E.p, key = getKey('gtts');
-  if (!key) { toast('먼저 Google Cloud API 키를 입력해 주세요'); return settingsSheet(() => cur === E && ttsSheet()); }
+  const E = cur, p = E.p;
+  if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(() => cur === E && ttsSheet()); }
   const targets = p.scenes.filter((s) => (s.narration || s.text).trim());
   if (!targets.length) return toast('자막이 있는 장면이 없어요');
-  let rate = p.audio.ttsRate || 1, busy = false;
+  const ai = await import('./ai.js');
+  let style = p.audio.ttsStyle || 'normal', busy = false;
   const L = sheet('🗣 AI 음성 만들기', `
-    <label>목소리</label><select id="vc"><option>목소리 목록을 불러오는 중…</option></select>
-    <label>말하기 속도</label>${chips('rate', [[0.9, '느리게'], [1, '보통'], [1.15, '조금 빠르게'], [1.3, '빠르게']], rate)}
+    <label>목소리</label><select id="vc">${ai.VOICES.map((v) => `<option ${v === p.audio.ttsVoice ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <label>말투</label>${chips('style', [['slow', '차분하게'], ['normal', '보통'], ['fast', '활기차게'], ['hype', '신나게']], style)}
     <label><input type="checkbox" id="fit" checked> 장면 길이를 음성 길이에 맞추기 (영상 클립 제외)</label>
-    <div class="mut" id="tst" style="margin:10px 0">자막이 있는 장면 ${targets.length}개의 음성을 만듭니다.</div>
+    <div class="mut" id="tst" style="margin:10px 0">자막이 있는 장면 ${targets.length}개의 음성을 만듭니다. 무료 등급은 요청 간격 제한이 있어 장면이 많으면 시간이 걸릴 수 있어요.</div>
     <div class="row"><button class="pri" data-act="go">음성 만들기</button></div>`);
-  bindChips(L.el, (k, v) => { rate = +v; });
-  const tts = await import('./tts.js');
-  try {
-    const voices = await tts.listVoices(key);
-    if (!L.el.isConnected) return;
-    if (!voices.length) throw new Error('사용할 수 있는 한국어 음성이 없어요.');
-    const pick = p.audio.ttsVoice && voices.some((v) => v.name === p.audio.ttsVoice) ? p.audio.ttsVoice : (voices.find((v) => /Neural2|Chirp/.test(v.name)) || voices[0]).name;
-    $('#vc', L.el).innerHTML = voices.map((v) => `<option value="${esc(v.name)}" ${v.name === pick ? 'selected' : ''}>${esc(v.name.replace('ko-KR-', ''))} (${v.gender})</option>`).join('');
-  } catch (e) { if (L.el.isConnected) { $('#tst', L.el).textContent = e.message; $('#vc', L.el).innerHTML = '<option value="">불러오지 못함</option>'; } }
+  bindChips(L.el, (k, v) => { style = v; });
   wire(L, {
     go: async (btn) => {
       const voice = $('#vc', L.el).value, fit = $('#fit', L.el).checked;
-      if (!voice || busy) return; busy = true; btn.disabled = true;
+      if (busy) return; busy = true; btn.disabled = true;
       const dec = new OfflineAudioContext(1, 1, 48000);
+      const say = (m) => { if (L.el.isConnected) $('#tst', L.el).textContent = m; };
       try {
         for (let i = 0; i < targets.length; i++) {
-          $('#tst', L.el).textContent = `음성 만드는 중… ${i + 1} / ${targets.length}`;
+          say(`음성 만드는 중… ${i + 1} / ${targets.length}`);
           const s = targets[i];
-          const blob = await tts.synth(key, (s.narration || s.text).replace(/\n/g, ' '), voice, rate);
+          const blob = await ai.synth((s.narration || s.text).replace(/\n/g, ' '), voice, TTS_STYLES[style], () => say(`사용 한도에 걸려 20초 기다리는 중… (${i + 1} / ${targets.length})`));
           if (cur !== E || !L.el.isConnected) return;
           const dur = (await dec.decodeAudioData(await blob.arrayBuffer())).duration;
           s.ttsId = await storeMedia(p, blob, 'audio', 'tts');
           if (fit && s.mediaKind !== 'video') s.duration = Math.max(1.5, Math.ceil((dur + 0.4) * 2) / 2);
         }
-        p.audio.ttsVoice = voice; p.audio.ttsRate = rate;
+        p.audio.ttsVoice = voice; p.audio.ttsStyle = style;
         E.t = 0; changed({ audio: true }); L.close(); toast('AI 음성을 넣었어요. ▶ 로 들어보세요');
-      } catch (e) { console.warn(e); changed({ audio: true }); busy = false; btn.disabled = false; if (L.el.isConnected) $('#tst', L.el).textContent = e.message || '음성 합성에 실패했어요'; }
+      } catch (e) { console.warn(e); changed({ audio: true }); busy = false; btn.disabled = false; say(e.message || '음성 합성에 실패했어요'); }
     },
   });
 }
@@ -673,6 +679,7 @@ function exportSheet() {
       box.innerHTML = `<div class="bar"><div id="pb"></div></div><div class="mut" id="pt">준비 중…</div><div class="row" style="margin-top:12px"><button data-x>취소</button></div>`;
       ctl = new AbortController(); E.busy = true;
       try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+      NATIVE && NATIVE.keepAwake(true);
       try {
         const audioBuf = await getMix();
         const w = res, h = res * 16 / 9;
@@ -684,24 +691,28 @@ function exportSheet() {
         const name = `${p.name.replace(/[\\/:*?"<>|]/g, '_')}.${out.ext}`;
         const file = new File([out.blob], name, { type: out.blob.type });
         url = URL.createObjectURL(out.blob);
-        const canShare = navigator.canShare && navigator.canShare({ files: [file] });
+        const canShare = NATIVE || (navigator.canShare && navigator.canShare({ files: [file] }));
         box.innerHTML = `<div class="result"><video src="${url}" controls playsinline loop></video></div>
           <div class="mut" style="margin:8px 0">✅ 완성 · ${(out.blob.size / 1048576).toFixed(1)}MB · ${out.ext.toUpperCase()} · ${out.method} · ${((performance.now() - t0) / 1000).toFixed(1)}초 소요</div>
-          <div class="row">${canShare ? '<button class="pri" data-act="share">📤 인스타·유튜브로 공유</button>' : ''}<a class="dl" href="${url}" download="${esc(name)}" style="text-decoration:none"><button style="width:100%" class="${canShare ? '' : 'pri'}">💾 기기에 저장</button></a></div>
+          <div class="row">${canShare ? '<button class="pri" data-act="share">📤 인스타·유튜브로 공유</button>' : ''}${NATIVE ? '<button data-act="nsave">💾 갤러리에 저장</button>' : `<a class="dl" href="${url}" download="${esc(name)}" style="text-decoration:none"><button style="width:100%" class="${canShare ? '' : 'pri'}">💾 기기에 저장</button></a>`}</div>
           ${p.post ? `<label>업로드용 설명글</label><textarea id="post" rows="4" readonly>${esc(`${p.post.description}\n\n${p.post.hashtags.join(' ')}`)}</textarea><div class="row" style="margin-top:6px"><button data-act="copy">📋 설명글 복사</button></div>` : ''}
           ${out.ext === 'webm' ? '<div class="mut" style="margin-top:8px">이 브라우저는 MP4 인코딩을 지원하지 않아 WebM으로 저장됩니다. 최신 Chrome에서 MP4로 만들어집니다.</div>' : ''}`;
-        L.share = () => navigator.share({ files: [file], title: p.name }).catch(() => {});
+        const native = (action) => async () => { toast('파일을 준비하는 중…'); try { toast(await nativeFile(out.blob, name, action)); } catch (e) { toast('실패했어요: ' + (e.message || e)); } };
+        L.share = NATIVE ? native('share') : () => navigator.share({ files: [file], title: p.name }).catch(() => {});
+        L.nsave = native('save');
       } catch (e) {
         if (e.name !== 'AbortError') { console.error(e); box.innerHTML = `<div class="mut">내보내기에 실패했어요: ${esc(e.message || e)}</div>`; }
       } finally {
         E.busy = false; ctl = null; lock && lock.release().catch(() => {}); lock = null;
+        NATIVE && NATIVE.keepAwake(false);
       }
     },
     share: () => L.share && L.share(),
+    nsave: () => L.nsave && L.nsave(),
     copy: () => navigator.clipboard.writeText($('#post', L.el).value).then(() => toast('복사했어요'), () => toast('복사하지 못했어요')),
   });
 }
 
 /* ───────── 시작 ───────── */
 showHome();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

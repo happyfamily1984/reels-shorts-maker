@@ -69,3 +69,4 @@ header h1 { font-size:18px; margin:0; flex:1; white-space:nowrap; overflow:hidde
 a.dl { color:inherit; }
 a.dl button { color:var(--fg); }
 .chips.emo button { font-size:24px; padding:6px 8px; background:transparent; }
+.sheet textarea.secret { -webkit-text-security:disc; font-family:monospace; }
