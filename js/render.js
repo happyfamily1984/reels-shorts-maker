@@ -1,5 +1,7 @@
 // 렌더 엔진 — 프로젝트와 시각 t(초)를 받아 캔버스에 한 프레임을 그린다.
 // 미리보기와 내보내기가 같은 함수를 쓰므로 보이는 그대로 영상이 된다.
+import { TRACKS, renderTrack } from './music.js';
+
 export const W = 1080, H = 1920;
 export const TD = 0.45; // 전환 길이(초)
 export const BGS = [
@@ -221,6 +223,7 @@ export async function mixAudio(p, getBlob) {
   };
   const a = p.audio;
   if (a.musicId) { const b = await decode(a.musicId); if (b) add(b, a.musicVol, 0, 0, true); }
+  else if (TRACKS[a.musicPreset]) add(await renderTrack(a.musicPreset, total), a.musicVol, 0, 0, true);
   if (a.narrationId) { const b = await decode(a.narrationId); if (b) add(b, a.narrationVol, 0); }
   let t = 0;
   const cache = new Map();

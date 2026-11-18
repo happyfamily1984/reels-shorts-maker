@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { W, H, BGS, drawFrame, drawScene, syncVideos, mixAudio, totalDuration, sceneStart, sceneAt } from './render.js';
 import { exportVideo } from './exporter.js';
+import { TRACKS } from './music.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const app = $('#app'), layers = $('#layers');
@@ -562,7 +563,9 @@ function audioSheet() {
   const E = cur, a = E.p.audio;
   pause();
   const L = sheet('오디오', `
-    <label>배경음악 ${a.musicId ? `— ${esc(a.musicName)}` : '(없음)'}</label>
+    <label>내장 음악 — 앱이 직접 만드는 음악이라 저작권 걱정이 없어요</label>${chips('preset', [['', '없음'], ...Object.entries(TRACKS).map(([k, v]) => [k, v.name])], a.musicId ? '' : (a.musicPreset || ''))}
+    <div class="row" style="margin-top:8px"><button data-act="listen">▶ 처음부터 들어보기</button></div>
+    <label>내 음악 파일 ${a.musicId ? `— ${esc(a.musicName)}` : '(없음)'}</label>
     <div class="row"><button data-act="music">🎵 음악 파일 ${a.musicId ? '교체' : '선택'}</button>${a.musicId ? '<button data-act="rmMusic">제거</button>' : ''}</div>
     <label>음악 크기</label><input type="range" id="mv" min="0" max="1" step="0.05" value="${a.musicVol}">
     <label>내레이션 ${a.narrationId ? '(녹음됨)' : '(없음)'}</label>
@@ -570,18 +573,20 @@ function audioSheet() {
     <label>내레이션 크기</label><input type="range" id="nv" min="0" max="1.5" step="0.05" value="${a.narrationVol}">
     <label>AI 음성 ${E.p.scenes.some((s) => s.ttsId) ? `(장면 ${E.p.scenes.filter((s) => s.ttsId).length}개에 적용됨)` : '(없음)'}</label>
     <div class="row"><button data-act="tts">🗣 장면별 AI 음성 만들기</button>${E.p.scenes.some((s) => s.ttsId) ? '<button data-act="rmTts">제거</button>' : ''}</div>
-    <div class="mut" style="margin-top:10px">음악은 영상 길이에 맞춰 반복되고 끝에서 자연스럽게 줄어듭니다. 저작권이 허용된 음원만 사용하세요.</div>`);
+    <div class="mut" style="margin-top:10px">음악은 영상 길이에 맞춰 이어지고 끝에서 자연스럽게 줄어듭니다. 내 음악 파일은 저작권이 허용된 음원만 사용하세요.</div>`);
   $('#mv', L.el).oninput = (e) => { a.musicVol = +e.target.value; changed({ audio: true, strip: false }); };
   $('#nv', L.el).oninput = (e) => { a.narrationVol = +e.target.value; changed({ audio: true, strip: false }); };
   const reopen = () => { L.close(); changed({ audio: true, strip: false }); audioSheet(); };
+  bindChips(L.el, (k, v) => { a.musicPreset = v; a.musicId = null; a.musicName = ''; reopen(); });
   wire(L, {
     music: async () => {
       const [f] = await pickFiles('audio/*'); if (!f) return;
-      a.musicId = await storeMedia(E.p, f, 'audio', f.name); a.musicName = f.name; reopen();
+      a.musicId = await storeMedia(E.p, f, 'audio', f.name); a.musicName = f.name; a.musicPreset = ''; reopen();
     },
     rmMusic: () => { a.musicId = null; a.musicName = ''; reopen(); },
     rmNar: () => { a.narrationId = null; reopen(); },
     rec: () => { L.close(); recordNarration(); },
+    listen: () => { L.close(); E.t = 0; play(); },
     tts: () => { L.close(); ttsSheet(); },
     rmTts: () => { E.p.scenes.forEach((s) => { s.ttsId = null; }); reopen(); },
   });
