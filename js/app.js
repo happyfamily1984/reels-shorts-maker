@@ -137,13 +137,14 @@ function thumb(cv, p, s, assets) {
 /* ───────── 홈 ───────── */
 async function showHome() {
   const ps = (await db.all('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
-  app.innerHTML = `<header><h1>🎬 릴스·쇼츠 메이커</h1></header>
+  app.innerHTML = `<header><h1>🎬 릴스·쇼츠 메이커</h1><button class="ghost" id="set">⚙️</button></header>
   <div class="home-body">
     <div class="hero"><h2>휴대폰만으로 세로 영상 완성</h2><div class="mut">대본이나 사진·영상을 넣으면 자막·전환·음악이 들어간 9:16 영상으로 만들어 드려요. 모든 작업은 이 기기 안에서 처리됩니다.</div></div>
     ${ps.length ? ps.map((p) => `<div class="proj" data-id="${p.id}"><canvas width="108" height="192"></canvas><div class="info"><b>${esc(p.name)}</b><span class="mut">장면 ${p.scenes.length}개 · ${fmt(totalDuration(p))} · ${new Date(p.updatedAt).toLocaleDateString('ko-KR')}</span></div><button class="ghost" data-menu>⋯</button></div>`).join('') : '<div class="empty">아직 만든 영상이 없어요.<br>아래 버튼으로 시작해 보세요.</div>'}
   </div>
   <button class="pri fab" id="new">＋ 새 영상 만들기</button>`;
   $('#new').onclick = newSheet;
+  $('#set').onclick = () => settingsSheet();
   for (const el of app.querySelectorAll('.proj')) {
     const p = ps.find((x) => x.id === el.dataset.id);
     el.onclick = (e) => (e.target.closest('[data-menu]') ? projMenu(p) : openEditor(p.id));
@@ -174,11 +175,13 @@ function renameSheet(p, done) {
 }
 function newSheet() {
   const L = sheet('새 영상 만들기', `
+    <button class="big" data-act="ai"><b>🤖 AI로 만들기</b><span class="mut">주제만 적으면 AI가 대본·자막·해시태그까지 작성</span></button>
     <button class="big" data-act="script"><b>📝 대본으로 만들기</b><span class="mut">글을 붙여넣으면 문장마다 장면과 자막을 자동 생성</span></button>
     <button class="big" data-act="media"><b>🖼 사진·영상으로 만들기</b><span class="mut">갤러리에서 여러 개를 고르면 순서대로 이어 붙임</span></button>
     <button class="big" data-act="blank"><b>➕ 빈 프로젝트</b><span class="mut">처음부터 직접 구성</span></button>`);
   const create = async (p) => { await db.put('projects', p); openEditor(p.id); };
   wire(L, {
+    ai: () => { L.close(); aiSheet(create); },
     blank: () => { L.close(); create(newProject('새 영상')); },
     media: async () => {
       const files = await pickFiles('image/*,video/*', true); L.close();
@@ -198,6 +201,53 @@ function newSheet() {
           S.close(); create(p);
         },
       });
+    },
+  });
+}
+/* ───────── 설정(API 키)·AI 대본 ───────── */
+const getKey = (k) => { try { return localStorage.getItem('key.' + k) || ''; } catch { return ''; } };
+function settingsSheet(done) {
+  const L = sheet('설정', `
+    <label>Claude API 키 — AI 대본 작성용</label><input type="password" id="k1" value="${esc(getKey('claude'))}" placeholder="sk-ant-..." autocomplete="off">
+    <div class="mut" style="margin-top:6px">Claude Console(platform.claude.com)에서 발급받은 키를 넣어 주세요. 사용량만큼 요금이 부과됩니다.</div>
+    <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, 해당 서비스로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
+    <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
+  wire(L, {
+    ok: () => {
+      L.el.querySelectorAll('input[data-k], #k1').forEach((i) => {
+        const k = i.dataset.k || 'claude', v = i.value.trim();
+        try { v ? localStorage.setItem('key.' + k, v) : localStorage.removeItem('key.' + k); } catch {}
+      });
+      L.close(); toast('저장했어요'); done && done();
+    },
+  });
+}
+function aiSheet(create) {
+  if (!getKey('claude')) { toast('먼저 Claude API 키를 입력해 주세요'); return settingsSheet(() => aiSheet(create)); }
+  let tone = '정보 전달', seconds = 30, busy = false;
+  const L = sheet('🤖 AI로 만들기', `
+    <label>어떤 영상을 만들까요?</label><textarea id="tp" rows="3" placeholder="예) 자취생을 위한 5분 계란 요리 3가지"></textarea>
+    <label>분위기</label>${chips('tone', [['정보 전달', '정보'], ['유머러스', '유머'], ['감성적', '감성'], ['제품·가게 홍보', '홍보'], ['동기부여', '동기부여']], tone)}
+    <label>길이</label>${chips('seconds', [[15, '15초'], [30, '30초'], [45, '45초'], [60, '60초']], seconds)}
+    <div class="row" style="margin-top:14px"><button class="pri" data-act="ok">대본 만들기</button></div>`);
+  bindChips(L.el, (k, v) => { if (k === 'tone') tone = v; else seconds = +v; });
+  wire(L, {
+    ok: async (btn) => {
+      const topic = $('#tp', L.el).value.trim();
+      if (!topic) return toast('주제를 입력해 주세요');
+      if (busy) return; busy = true; btn.textContent = 'AI가 대본을 쓰는 중…';
+      try {
+        const { generateScript } = await import('./ai.js');
+        const out = await generateScript({ topic, tone, seconds });
+        if (!L.el.isConnected) return;
+        const p = newProject((out.title || topic).slice(0, 30));
+        p.post = { description: out.description || '', hashtags: out.hashtags || [] };
+        p.scenes = out.scenes.map((sc, i) => newScene({
+          text: sc.caption, narration: sc.narration || '', emoji: sc.emoji || '',
+          duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
+        }));
+        L.close(); create(p);
+      } catch (e) { console.warn(e); toast(e.message || 'AI 요청에 실패했어요'); busy = false; btn.textContent = '대본 만들기'; }
     },
   });
 }
@@ -502,6 +552,7 @@ function exportSheet() {
         box.innerHTML = `<div class="result"><video src="${url}" controls playsinline loop></video></div>
           <div class="mut" style="margin:8px 0">✅ 완성 · ${(out.blob.size / 1048576).toFixed(1)}MB · ${out.ext.toUpperCase()} · ${out.method} · ${((performance.now() - t0) / 1000).toFixed(1)}초 소요</div>
           <div class="row">${canShare ? '<button class="pri" data-act="share">📤 인스타·유튜브로 공유</button>' : ''}<a class="dl" href="${url}" download="${esc(name)}" style="text-decoration:none"><button style="width:100%" class="${canShare ? '' : 'pri'}">💾 기기에 저장</button></a></div>
+          ${p.post ? `<label>업로드용 설명글</label><textarea id="post" rows="4" readonly>${esc(`${p.post.description}\n\n${p.post.hashtags.join(' ')}`)}</textarea><div class="row" style="margin-top:6px"><button data-act="copy">📋 설명글 복사</button></div>` : ''}
           ${out.ext === 'webm' ? '<div class="mut" style="margin-top:8px">이 브라우저는 MP4 인코딩을 지원하지 않아 WebM으로 저장됩니다. 최신 Chrome에서 MP4로 만들어집니다.</div>' : ''}`;
         L.share = () => navigator.share({ files: [file], title: p.name }).catch(() => {});
       } catch (e) {
@@ -511,6 +562,7 @@ function exportSheet() {
       }
     },
     share: () => L.share && L.share(),
+    copy: () => navigator.clipboard.writeText($('#post', L.el).value).then(() => toast('복사했어요'), () => toast('복사하지 못했어요')),
   });
 }
 

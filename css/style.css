@@ -50,7 +50,7 @@ header h1 { font-size:18px; margin:0; flex:1; white-space:nowrap; overflow:hidde
 .sheet h3 { margin:0 0 10px; font-size:16px; display:flex; align-items:center; }
 .sheet h3 span { flex:1; }
 .sheet label { display:block; font-size:13px; color:var(--mut); margin:12px 0 6px; }
-.sheet textarea, .sheet input[type=text] { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px; resize:none; outline:none; }
+.sheet textarea, .sheet input[type=text], .sheet input[type=password], .sheet select { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px; resize:none; outline:none; }
 .sheet input[type=range] { width:100%; accent-color:var(--acc); }
 .row { display:flex; gap:8px; }
 .row > * { flex:1; }
