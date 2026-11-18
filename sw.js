@@ -1,7 +1,7 @@
 // 서비스 워커 — 앱 파일을 캐시해 오프라인에서도 열리게 한다.
 // 배포할 때마다 VERSION을 올리면 새 버전이 적용된다.
 const VERSION = 'v1';
-const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/db.js', 'js/render.js', 'js/exporter.js', 'js/vendor/mp4-muxer.mjs', 'js/vendor/anthropic-sdk.mjs', 'js/ai.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/db.js', 'js/render.js', 'js/exporter.js', 'js/vendor/mp4-muxer.mjs', 'js/vendor/anthropic-sdk.mjs', 'js/ai.js', 'js/tts.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim()));

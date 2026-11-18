@@ -89,7 +89,7 @@ const newProject = (name) => ({
   style: { caption: 'outline', color: '#ffffff', size: 84, font: 'gothic' },
   audio: { musicId: null, musicName: '', musicVol: 0.5, narrationId: null, narrationVol: 1 },
 });
-const newScene = (o) => ({ id: uid(), text: '', duration: 3, mediaId: null, mediaKind: null, bg: 0, motion: 'zoomIn', textPos: 'bottom', textAnim: 'pop', fit: 'cover', clipAudio: true, ...o });
+const newScene = (o) => ({ id: uid(), text: '', narration: '', duration: 3, mediaId: null, mediaKind: null, bg: 0, motion: 'zoomIn', textPos: 'bottom', textAnim: 'pop', fit: 'cover', clipAudio: true, ...o });
 const autoDur = (t) => Math.min(8, Math.max(2, Math.round((1 + t.length / 6) * 2) / 2));
 function splitScript(text) {
   const out = [];
@@ -210,6 +210,8 @@ function settingsSheet(done) {
   const L = sheet('설정', `
     <label>Claude API 키 — AI 대본 작성용</label><input type="password" id="k1" value="${esc(getKey('claude'))}" placeholder="sk-ant-..." autocomplete="off">
     <div class="mut" style="margin-top:6px">Claude Console(platform.claude.com)에서 발급받은 키를 넣어 주세요. 사용량만큼 요금이 부과됩니다.</div>
+    <label>Google Cloud API 키 — AI 음성(TTS)용</label><input type="password" data-k="gtts" value="${esc(getKey('gtts'))}" placeholder="AIza..." autocomplete="off">
+    <div class="mut" style="margin-top:6px">Google Cloud Console에서 "Cloud Text-to-Speech API"를 사용 설정한 뒤 API 키를 발급해 넣어 주세요. 매달 무료 사용량이 있습니다.</div>
     <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, 해당 서비스로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
     <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
   wire(L, {
@@ -398,6 +400,7 @@ function sceneSheet() {
   pause();
   const L = sheet(`장면 ${E.sel + 1} 편집`, `
     <label>자막</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
+    <label>읽을 문장 (AI 음성용 · 비우면 자막을 읽음)</label><input type="text" id="nr" value="${esc(s.narration || '')}" placeholder="자막과 다르게 읽고 싶을 때만 입력">
     <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
     <label>자막 위치</label>${chips('textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], s.textPos)}
     <label>자막 효과</label>${chips('textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], s.textAnim)}
@@ -406,7 +409,8 @@ function sceneSheet() {
     ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
     <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}</div>
     <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
-  $('#tx', L.el).oninput = (e) => { s.text = e.target.value; changed(); };
+  $('#tx', L.el).oninput = (e) => { s.text = e.target.value; if (!s.narration) dropTts(s); changed(); };
+  $('#nr', L.el).oninput = (e) => { s.narration = e.target.value; dropTts(s); changed({ strip: false }); };
   $('#du', L.el).oninput = (e) => { s.duration = +e.target.value; $('#dv', L.el).textContent = s.duration; changed({ audio: true }); };
   bindChips(L.el, (k, v) => {
     if (k === 'bg') s.bg = +v; else if (k === 'clipAudio') s.clipAudio = v === '1'; else s[k] = v;
@@ -484,6 +488,8 @@ function audioSheet() {
     <label>내레이션 ${a.narrationId ? '(녹음됨)' : '(없음)'}</label>
     <div class="row"><button data-act="rec">🎙 ${a.narrationId ? '다시 녹음' : '녹음하기'}</button>${a.narrationId ? '<button data-act="rmNar">제거</button>' : ''}</div>
     <label>내레이션 크기</label><input type="range" id="nv" min="0" max="1.5" step="0.05" value="${a.narrationVol}">
+    <label>AI 음성 ${E.p.scenes.some((s) => s.ttsId) ? `(장면 ${E.p.scenes.filter((s) => s.ttsId).length}개에 적용됨)` : '(없음)'}</label>
+    <div class="row"><button data-act="tts">🗣 장면별 AI 음성 만들기</button>${E.p.scenes.some((s) => s.ttsId) ? '<button data-act="rmTts">제거</button>' : ''}</div>
     <div class="mut" style="margin-top:10px">음악은 영상 길이에 맞춰 반복되고 끝에서 자연스럽게 줄어듭니다. 저작권이 허용된 음원만 사용하세요.</div>`);
   $('#mv', L.el).oninput = (e) => { a.musicVol = +e.target.value; changed({ audio: true, strip: false }); };
   $('#nv', L.el).oninput = (e) => { a.narrationVol = +e.target.value; changed({ audio: true, strip: false }); };
@@ -496,6 +502,51 @@ function audioSheet() {
     rmMusic: () => { a.musicId = null; a.musicName = ''; reopen(); },
     rmNar: () => { a.narrationId = null; reopen(); },
     rec: () => { L.close(); recordNarration(); },
+    tts: () => { L.close(); ttsSheet(); },
+    rmTts: () => { E.p.scenes.forEach((s) => { s.ttsId = null; }); reopen(); },
+  });
+}
+function dropTts(s) { if (s.ttsId) { s.ttsId = null; cur.mixDirty = true; } }
+async function ttsSheet() {
+  const E = cur, p = E.p, key = getKey('gtts');
+  if (!key) { toast('먼저 Google Cloud API 키를 입력해 주세요'); return settingsSheet(() => cur === E && ttsSheet()); }
+  const targets = p.scenes.filter((s) => (s.narration || s.text).trim());
+  if (!targets.length) return toast('자막이 있는 장면이 없어요');
+  let rate = p.audio.ttsRate || 1, busy = false;
+  const L = sheet('🗣 AI 음성 만들기', `
+    <label>목소리</label><select id="vc"><option>목소리 목록을 불러오는 중…</option></select>
+    <label>말하기 속도</label>${chips('rate', [[0.9, '느리게'], [1, '보통'], [1.15, '조금 빠르게'], [1.3, '빠르게']], rate)}
+    <label><input type="checkbox" id="fit" checked> 장면 길이를 음성 길이에 맞추기 (영상 클립 제외)</label>
+    <div class="mut" id="tst" style="margin:10px 0">자막이 있는 장면 ${targets.length}개의 음성을 만듭니다.</div>
+    <div class="row"><button class="pri" data-act="go">음성 만들기</button></div>`);
+  bindChips(L.el, (k, v) => { rate = +v; });
+  const tts = await import('./tts.js');
+  try {
+    const voices = await tts.listVoices(key);
+    if (!L.el.isConnected) return;
+    if (!voices.length) throw new Error('사용할 수 있는 한국어 음성이 없어요.');
+    const pick = p.audio.ttsVoice && voices.some((v) => v.name === p.audio.ttsVoice) ? p.audio.ttsVoice : (voices.find((v) => /Neural2|Chirp/.test(v.name)) || voices[0]).name;
+    $('#vc', L.el).innerHTML = voices.map((v) => `<option value="${esc(v.name)}" ${v.name === pick ? 'selected' : ''}>${esc(v.name.replace('ko-KR-', ''))} (${v.gender})</option>`).join('');
+  } catch (e) { if (L.el.isConnected) { $('#tst', L.el).textContent = e.message; $('#vc', L.el).innerHTML = '<option value="">불러오지 못함</option>'; } }
+  wire(L, {
+    go: async (btn) => {
+      const voice = $('#vc', L.el).value, fit = $('#fit', L.el).checked;
+      if (!voice || busy) return; busy = true; btn.disabled = true;
+      const dec = new OfflineAudioContext(1, 1, 48000);
+      try {
+        for (let i = 0; i < targets.length; i++) {
+          $('#tst', L.el).textContent = `음성 만드는 중… ${i + 1} / ${targets.length}`;
+          const s = targets[i];
+          const blob = await tts.synth(key, (s.narration || s.text).replace(/\n/g, ' '), voice, rate);
+          if (cur !== E || !L.el.isConnected) return;
+          const dur = (await dec.decodeAudioData(await blob.arrayBuffer())).duration;
+          s.ttsId = await storeMedia(p, blob, 'audio', 'tts');
+          if (fit && s.mediaKind !== 'video') s.duration = Math.max(1.5, Math.ceil((dur + 0.4) * 2) / 2);
+        }
+        p.audio.ttsVoice = voice; p.audio.ttsRate = rate;
+        E.t = 0; changed({ audio: true }); L.close(); toast('AI 음성을 넣었어요. ▶ 로 들어보세요');
+      } catch (e) { console.warn(e); changed({ audio: true }); busy = false; btn.disabled = false; if (L.el.isConnected) $('#tst', L.el).textContent = e.message || '음성 합성에 실패했어요'; }
+    },
   });
 }
 async function recordNarration() {

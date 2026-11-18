@@ -205,6 +205,7 @@ export async function mixAudio(p, getBlob) {
   let t = 0;
   const cache = new Map();
   for (const s of p.scenes) {
+    if (s.ttsId) { const b = await decode(s.ttsId); if (b) add(b, 1, t); }
     if (s.mediaKind === 'video' && s.clipAudio) {
       if (!cache.has(s.mediaId)) cache.set(s.mediaId, await decode(s.mediaId));
       const b = cache.get(s.mediaId);
