@@ -90,9 +90,9 @@ function drawText(ctx, p, s, local) {
     if (chars !== Infinity) chars -= full.length;
     if (!line) return;
     const y = (i - (lines.length - 1) / 2) * lh;
-    if (st.caption === 'box') {
+    if (st.caption === 'box' || st.caption === 'highlight') {
       const w = ctx.measureText(line).width + size * 0.7;
-      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      ctx.fillStyle = st.caption === 'box' ? 'rgba(0,0,0,0.72)' : st.color;
       ctx.beginPath(); ctx.roundRect(-w / 2, y - lh / 2 + 3, w, lh - 6, size * 0.22); ctx.fill();
     } else if (st.caption === 'outline') {
       ctx.lineJoin = 'round'; ctx.lineWidth = size * 0.2; ctx.strokeStyle = '#000';
@@ -103,11 +103,27 @@ function drawText(ctx, p, s, local) {
     } else { // shadow
       ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = size * 0.25; ctx.shadowOffsetY = size * 0.06;
     }
-    ctx.fillStyle = st.caption === 'neon' ? '#fff' : st.color;
+    ctx.fillStyle = st.caption === 'neon' ? '#fff' : st.caption === 'highlight' ? '#111' : st.color;
     ctx.fillText(line, 0, y);
     ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
   });
   ctx.restore();
+}
+
+// 이모지 스티커: 장면 시작에 톡 튀어나오고, 지정한 움직임을 반복한다
+function drawStickers(ctx, s, local) {
+  for (const k of s.stickers || []) {
+    let sc = back(local / 0.4), dy = 0, rot = 0;
+    if (k.anim === 'bounce') dy = -Math.abs(Math.sin(local * 4)) * k.size * 0.25;
+    else if (k.anim === 'pulse') sc *= 1 + 0.12 * Math.sin(local * 6);
+    else if (k.anim === 'wiggle') rot = Math.sin(local * 8) * 0.2;
+    else if (k.anim === 'spin') rot = local * 2;
+    ctx.save();
+    ctx.translate(k.x * W, k.y * H + dy); ctx.rotate(rot); ctx.scale(sc, sc);
+    ctx.font = `${k.size}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fff'; ctx.fillText(k.e, 0, 0);
+    ctx.restore();
+  }
 }
 
 export function drawScene(ctx, p, s, local, assets) {
@@ -121,6 +137,7 @@ export function drawScene(ctx, p, s, local, assets) {
     g.addColorStop(0, c[0]); g.addColorStop(1, c[1]);
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
+  drawStickers(ctx, s, local);
   drawText(ctx, p, s, local);
 }
 

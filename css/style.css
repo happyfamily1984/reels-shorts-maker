@@ -25,7 +25,7 @@ header h1 { font-size:18px; margin:0; flex:1; white-space:nowrap; overflow:hidde
 
 /* 편집기 */
 .stage { flex:1; min-height:0; display:flex; justify-content:center; align-items:center; padding:4px; }
-.stage canvas { height:100%; max-width:100%; aspect-ratio:9/16; border-radius:12px; background:#000; object-fit:contain; }
+.stage canvas { touch-action:none; height:100%; max-width:100%; aspect-ratio:9/16; border-radius:12px; background:#000; object-fit:contain; }
 .transport { display:flex; align-items:center; gap:10px; padding:6px 12px; }
 .transport input { flex:1; accent-color:var(--acc); }
 .transport button { width:44px; height:38px; padding:0; font-size:16px; }
@@ -68,3 +68,4 @@ header h1 { font-size:18px; margin:0; flex:1; white-space:nowrap; overflow:hidde
 #toast.on { opacity:1; }
 a.dl { color:inherit; }
 a.dl button { color:var(--fg); }
+.chips.emo button { font-size:24px; padding:6px 8px; background:transparent; }

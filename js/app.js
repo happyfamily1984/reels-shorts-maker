@@ -245,7 +245,8 @@ function aiSheet(create) {
         const p = newProject((out.title || topic).slice(0, 30));
         p.post = { description: out.description || '', hashtags: out.hashtags || [] };
         p.scenes = out.scenes.map((sc, i) => newScene({
-          text: sc.caption, narration: sc.narration || '', emoji: sc.emoji || '',
+          text: sc.caption, narration: sc.narration || '',
+          stickers: sc.emoji ? [{ id: uid(), e: sc.emoji, x: 0.5, y: 0.3, size: 280, anim: 'bounce' }] : [],
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
         L.close(); create(p);
@@ -285,7 +286,28 @@ async function openEditor(id) {
   $('#back').onclick = goBack;
   $('#pname').onclick = () => renameSheet(p, () => { $('#pname').textContent = p.name; });
   $('#export').onclick = exportSheet;
-  $('#play').onclick = $('#cv').onclick = () => (E.playing ? pause() : play());
+  $('#play').onclick = () => (E.playing ? pause() : play());
+  // 미리보기: 탭 = 재생/정지, 스티커를 끌면 이동, 스티커를 탭하면 편집
+  const cv = $('#cv'); let drag = null;
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; };
+  cv.onpointerdown = (e) => {
+    const q = pos(e), s = p.scenes.length && p.scenes[sceneAt(p, E.t).i];
+    const k = !E.playing && s && [...(s.stickers || [])].reverse().find((k) => Math.hypot((q.x - k.x) * W, (q.y - k.y) * H) < k.size * 0.6);
+    drag = { k, s, q, moved: false };
+    if (k) cv.setPointerCapture(e.pointerId);
+  };
+  cv.onpointermove = (e) => {
+    if (!drag || !drag.k) return;
+    const q = pos(e);
+    if (!drag.moved && Math.hypot(q.x - drag.q.x, q.y - drag.q.y) < 0.015) return;
+    drag.moved = true;
+    drag.k.x = Math.min(0.95, Math.max(0.05, q.x)); drag.k.y = Math.min(0.95, Math.max(0.05, q.y));
+  };
+  cv.onpointerup = cv.onpointercancel = () => {
+    const d = drag; drag = null; if (!d) return;
+    if (!d.k) return E.playing ? pause() : play();
+    if (d.moved) changed(); else stickerEdit(d.s, d.k);
+  };
   $('#seek').oninput = (e) => { pause(); E.t = e.target.value / 1000 * totalDuration(p); E.sel = sceneAt(p, E.t).i; markSel(); };
   app.querySelector('.tools').onclick = (e) => {
     const b = e.target.closest('[data-tool]'); if (!b) return;
@@ -409,6 +431,7 @@ function sceneSheet() {
     ${s.mediaId ? `<label>화면 맞춤</label>${chips('fit', [['cover', '꽉 채우기'], ['contain', '전체 보기(흐린 배경)']], s.fit)}` : `<label>배경색</label>${swatches('bg', BGS.map((c, i) => ({ v: i, css: `linear-gradient(135deg,${c[0]},${c[1]})` })), s.bg)}`}
     ${s.mediaKind === 'video' ? `<label>✂ 영상 시작 지점 <b id="tv">${(s.trimStart || 0).toFixed(1)}</b>초 (원본 ${vdur.toFixed(1)}초)</label><input type="range" id="tr" min="0" max="${Math.max(0, vdur - 0.5).toFixed(1)}" step="0.1" value="${s.trimStart || 0}">` : ''}
     ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
+    <label>스티커 (미리보기에서 끌어서 옮기고, 눌러서 수정)</label><div class="chips">${(s.stickers || []).map((k) => `<button data-act="stk" data-id="${k.id}">${k.e}</button>`).join('')}<button data-act="addStk">＋ 추가</button></div>
     <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}</div>
     <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="split">나누기</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
   $('#tx', L.el).oninput = (e) => { s.text = e.target.value; if (!s.narration) dropTts(s); changed(); };
@@ -434,6 +457,8 @@ function sceneSheet() {
   };
   wire(L, {
     left: () => move(-1), right: () => move(1),
+    addStk: () => { L.close(); stickerPicker(s); },
+    stk: (b) => { L.close(); stickerEdit(s, s.stickers.find((k) => k.id === b.dataset.id)); },
     split: () => {
       // 재생 위치에서 장면을 둘로 나눈다 (영상 클립은 뒤쪽 조각이 이어서 재생됨)
       const at = Math.round((E.t - sceneStart(p, E.sel)) * 2) / 2;
@@ -457,6 +482,35 @@ function sceneSheet() {
     },
   });
 }
+const EMOJIS = '🔥 ✨ ❤️ 😍 😂 🤣 😱 🤔 👍 👏 🙌 💯 ⭐ 🎉 💡 📌 ✅ ❌ ⚠️ 👉 👇 👆 💰 🛒 🎁 🍽️ ☕ 🍰 ✈️ 🏠 🐶 🐱 💪 🏃 🎵 📷 💬 ❓ ❗ 🆕 🔔 🌸 🌈 ☀️ 🌙 💤 😎 🥳 😭 🙏'.split(' ');
+function stickerPicker(s) {
+  const L = sheet('스티커 고르기', `<div class="chips emo">${EMOJIS.map((e) => `<button data-act="pick" data-e="${e}">${e}</button>`).join('')}</div>`);
+  wire(L, {
+    pick: (b) => {
+      (s.stickers = s.stickers || []).push({ id: uid(), e: b.dataset.e, x: 0.5, y: 0.32, size: 240, anim: 'bounce' });
+      changed(); L.close(); toast('미리보기에서 스티커를 끌어 옮길 수 있어요');
+    },
+  });
+}
+function stickerEdit(s, k) {
+  if (!k) return;
+  const L = sheet(`스티커 ${k.e}`, `
+    <label>크기</label><input type="range" id="ss" min="100" max="600" step="10" value="${k.size}">
+    <label>움직임</label>${chips('anim', [['bounce', '통통'], ['pulse', '두근'], ['wiggle', '흔들'], ['spin', '회전'], ['none', '고정']], k.anim)}
+    <div class="row" style="margin-top:14px"><button class="danger" data-act="del">스티커 삭제</button></div>`);
+  $('#ss', L.el).oninput = (e) => { k.size = +e.target.value; changed(); };
+  bindChips(L.el, (key, v) => { k.anim = v; changed(); });
+  wire(L, { del: () => { s.stickers = s.stickers.filter((x) => x !== k); changed(); L.close(); } });
+}
+// 자막 템플릿: 스타일·전환·자막 위치·효과를 한 번에 바꾼다
+const TEMPLATES = {
+  basic: ['기본', { caption: 'outline', color: '#ffffff', size: 84, font: 'gothic' }, 'fade', 'bottom', 'pop'],
+  variety: ['예능', { caption: 'outline', color: '#ffe600', size: 104, font: 'gothic' }, 'zoom', 'center', 'pop'],
+  mood: ['감성', { caption: 'shadow', color: '#ffffff', size: 68, font: 'serif' }, 'fade', 'center', 'fade'],
+  news: ['뉴스', { caption: 'box', color: '#ffffff', size: 72, font: 'gothic' }, 'slide', 'bottom', 'slide'],
+  neon: ['네온', { caption: 'neon', color: '#00e5ff', size: 88, font: 'gothic' }, 'zoom', 'center', 'fade'],
+  marker: ['형광펜', { caption: 'highlight', color: '#ffe600', size: 80, font: 'gothic' }, 'slide', 'bottom', 'type'],
+};
 function scriptSheet() {
   const E = cur, p = E.p;
   const L = sheet('대본', `<div class="mut">한 줄이 한 장면의 자막이 됩니다. 장면보다 줄이 많으면 새 장면이 추가돼요.</div>
@@ -481,7 +535,8 @@ function styleSheet() {
   const E = cur, p = E.p, st = p.style;
   const colors = ['#ffffff', '#ffe600', '#00e5ff', '#ff5c8a', '#7dff7a', '#ff9d2e'].map((c) => ({ v: c, css: c }));
   const L = sheet('스타일', `
-    <label>자막 스타일</label>${chips('caption', [['outline', '테두리'], ['box', '박스'], ['neon', '네온'], ['shadow', '그림자']], st.caption)}
+    <label>템플릿 — 누르면 전체 분위기가 한 번에 바뀝니다</label>${chips('tpl', Object.entries(TEMPLATES).map(([k, v]) => [k, v[0]]), '')}
+    <label>자막 스타일</label>${chips('caption', [['outline', '테두리'], ['box', '박스'], ['highlight', '형광펜'], ['neon', '네온'], ['shadow', '그림자']], st.caption)}
     <label>자막 색</label>${swatches('color', colors, st.color)}
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
@@ -491,6 +546,12 @@ function styleSheet() {
   wire(L, {});
   $('#sz', L.el).oninput = (e) => { st.size = +e.target.value; $('#sv', L.el).textContent = st.size; changed(); };
   bindChips(L.el, (k, v) => {
+    if (k === 'tpl') {
+      const [, style, tr, pos, anim] = TEMPLATES[v];
+      Object.assign(st, style); p.transition = tr;
+      p.scenes.forEach((s) => { s.textPos = pos; s.textAnim = anim; });
+      changed(); L.close(); styleSheet(); return;
+    }
     if (k === 'transition') p.transition = v;
     else if (k.startsWith('all.')) p.scenes.forEach((s) => { s[k.slice(4)] = v; });
     else st[k] = v;
