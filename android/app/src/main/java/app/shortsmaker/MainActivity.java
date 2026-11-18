@@ -59,7 +59,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         web = new WebView(this);
-        web.setBackgroundColor(Color.parseColor("#0e0e12"));
+        web.setBackgroundColor(Color.parseColor("#07070f"));
         setContentView(web);
         // 상태바·내비게이션바·키보드에 가리지 않도록 여백을 준다
         web.setOnApplyWindowInsetsListener((v, insets) -> {

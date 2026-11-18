@@ -1,58 +1,63 @@
 // AI 대본·AI 음성 — 사용자의 Gemini API 키(Google AI Studio, 무료 등급)로 기기에서 직접 호출한다.
 const URL_ = 'https://generativelanguage.googleapis.com/v1beta/interactions';
-// 대본 작성에 쓸 모델. 설정에서 고른 것을 먼저 쓰고, 한도 초과·사용 불가면 나머지를 차례로 시도한다.
+// 대본 작성에 쓸 모델. 설정에서 고른 것을 먼저 쓰고, 한도 초과·사용 불가·무응답이면 나머지를 차례로 시도한다.
 export const MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
 export const getModel = () => { try { const m = localStorage.getItem('model.gemini'); return MODELS.includes(m) ? m : MODELS[0]; } catch { return MODELS[0]; } };
 const fail = (code, msg) => Object.assign(new Error(msg), { code });
-const TTS_MODEL = 'gemini-3.8-flash-tts';
+const TTS_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
 export const VOICES = ['Kore', 'Aoede', 'Leda', 'Zephyr', 'Puck', 'Charon', 'Fenrir', 'Orus'];
 
-// 키는 여러 개를 줄바꿈으로 저장할 수 있다. 한 키가 한도에 걸리거나 잘못됐으면 다음 키로 넘어간다.
+// 키는 여러 개를 줄바꿈으로 저장할 수 있다. 한 키가 한도에 걸리거나, 잘못됐거나, 응답이 없으면 다음 키로 넘어간다.
 export const getKeys = () => { try { return (localStorage.getItem('key.gemini') || '').split(/[\s,]+/).filter(Boolean); } catch { return []; } };
 let cursor = 0; // 마지막으로 성공한 키부터 쓴다
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function call(body, onWait, waits = 2) {
+
+// 한 모델에 대해 등록된 키를 차례로 시도한다. 실패하면 이유(code)를 달아 던진다:
+//  limit(한도 초과) · model(모델 없음) · noresp(무응답·서버 오류·연결 실패) · key(키 오류)
+async function call(body, timeout) {
   const keys = getKeys();
-  let limited = 0, bad = 0, last = '';
+  let limited = 0, bad = 0, silent = 0;
   for (let n = 0; n < keys.length; n++) {
     const idx = (cursor + n) % keys.length;
-    let r;
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeout);
+    let r, j;
     try {
-      r = await fetch(URL_, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': keys[idx] }, body: JSON.stringify(body) });
-    } catch { throw new Error('인터넷 연결을 확인해 주세요.'); }
-    const j = await r.json().catch(() => ({}));
+      r = await fetch(URL_, { method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json', 'x-goog-api-key': keys[idx] }, body: JSON.stringify(body) });
+      j = await r.json().catch(() => ({}));
+    } catch { silent++; continue; } // 시간 초과·연결 실패 → 다음 키
+    finally { clearTimeout(timer); }
     if (r.ok) { cursor = idx; return j; }
-    last = j.error?.message || '';
-    if (r.status === 429) { limited++; continue; } // 한도 초과 → 다음 키
-    if (r.status === 401 || r.status === 403 || /API key/i.test(last)) { bad++; continue; } // 잘못된 키 → 다음 키
+    const msg = j.error?.message || '';
+    if (r.status === 429) { limited++; continue; }
+    if (r.status === 401 || r.status === 403 || /API key/i.test(msg)) { bad++; continue; }
     if (r.status === 404) throw fail('model', `AI 모델(${body.model})을 찾을 수 없어요. 앱 업데이트가 필요할 수 있어요.`);
-    throw new Error(`AI 요청 실패 (${r.status}): ${last}`);
+    if (r.status >= 500) { silent++; continue; } // 서버 쪽 오류 → 다음 키
+    throw new Error(`AI 요청 실패 (${r.status}): ${msg}`);
   }
-  if (limited && waits > 0) { // 쓸 수 있는 키가 모두 한도에 걸림 → 잠시 기다렸다 다시
-    onWait && onWait(); await sleep(20000);
-    return call(body, onWait, waits - 1);
-  }
-  if (limited) throw fail('limit', `등록된 키 ${keys.length}개가 모두 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.`);
-  throw new Error(keys.length > 1 ? `등록된 Gemini API 키 ${bad}개가 모두 올바르지 않아요. 설정에서 확인해 주세요.` : 'Gemini API 키가 올바르지 않아요. 설정에서 확인해 주세요.');
+  if (limited) throw fail('limit', '모든 모델과 키가 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.');
+  if (silent) throw fail('noresp', navigator.onLine === false ? '인터넷 연결을 확인해 주세요.' : 'AI 서버가 응답하지 않아요. 잠시 후 다시 시도해 주세요.');
+  throw fail('key', keys.length > 1 ? `등록된 Gemini API 키 ${bad}개가 모두 올바르지 않아요. 설정에서 확인해 주세요.` : 'Gemini API 키가 올바르지 않아요. 설정에서 확인해 주세요.');
 }
 
-// 대본용 호출: 고른 모델 → 나머지 모델 순으로, 각 모델마다 등록된 키를 모두 시도한다
-async function callText(body) {
-  const first = getModel(), order = [first, ...MODELS.filter((m) => m !== first)];
+// 모델을 차례로 바꿔 가며 호출한다. 각 모델마다 등록된 키를 모두 시도하고,
+// 전부 한도에 걸렸을 때만 20초 기다렸다가 한 번 더 돈다.
+async function callAny(models, body, timeout, onWait) {
   let err;
   for (let round = 0; round < 2; round++) {
-    for (const model of order) {
-      try { return await call({ model, ...body }, null, 0); } catch (e) {
-        if (e.code !== 'limit' && e.code !== 'model') throw e; // 키 오류·네트워크 오류는 모델을 바꿔도 소용없다
-        err = e;
+    let limited = false;
+    for (const model of models) {
+      try { return await call({ model, ...body }, timeout); } catch (e) {
+        if (!e.code || e.code === 'key') throw e; // 키 오류·요청 오류는 모델을 바꿔도 소용없다
+        err = e; limited = limited || e.code === 'limit';
       }
     }
-    if (err.code !== 'limit' || round) break;
-    await sleep(20000); // 모든 모델·키가 한도에 걸림 → 한 번만 기다렸다 재시도
+    if (!limited || round) break;
+    onWait && onWait(); await sleep(20000);
   }
-  throw err.code === 'limit' ? new Error('모든 모델과 키가 무료 사용 한도를 넘었어요. 잠시 후 다시 시도하거나 키를 추가해 주세요.') : err;
+  throw err;
 }
+const callText = (body) => { const first = getModel(); return callAny([first, ...MODELS.filter((m) => m !== first)], body, 25000); };
 
 // 응답 안에서 원하는 종류(text/audio)의 조각을 모은다. 입력 메아리와 생각 과정은 건너뛴다.
 function parts(res, type) {
@@ -121,12 +126,11 @@ function toWav(pcm) {
 export async function synth(text, voice, style, onWait) {
   const content = { type: 'text', text };
   if (style) content.annotations = [{ type: 'speech_metadata', style }];
-  const res = await call({
-    model: TTS_MODEL,
+  const res = await callAny(TTS_MODELS, {
     input: [{ type: 'user_input', content: [content] }],
     response_format: { type: 'audio' },
     generation_config: { speech_config: [{ voice }] },
-  }, onWait);
+  }, 45000, onWait);
   const b64 = parts(res, 'audio').map((p) => p.data).join('');
   if (!b64) throw new Error('음성 데이터를 받지 못했어요. 다시 시도해 주세요.');
   const bin = atob(b64), u8 = new Uint8Array(bin.length);

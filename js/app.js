@@ -150,12 +150,21 @@ function thumb(cv, p, s, assets) {
 }
 
 /* ───────── 홈 ───────── */
+const ICON = {
+  gear: '<svg width="24" height="24" viewBox="0 0 24 24" fill="#fff"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.300 7.300 0 0 0-1.700-1l-.4-2.500a.5.5 0 0 0-.5-.4h-3.800a.5.5 0 0 0-.5.4l-.4 2.500a7.300 7.300 0 0 0-1.700 1l-2.400-1a.5.5 0 0 0-.6.2L2.700 8.800a.5.5 0 0 0 .1.6l2 1.600a7.600 7.600 0 0 0 0 2l-2 1.600a.5.5 0 0 0-.1.6l1.900 3.300c.1.200.400.300.600.200l2.400-1c.500.400 1.100.700 1.700 1l.4 2.500c0 .200.200.400.500.400h3.800c.200 0 .500-.200.500-.400l.4-2.500c.600-.300 1.200-.600 1.700-1l2.400 1c.200.100.500 0 .600-.200l1.900-3.300a.5.5 0 0 0-.1-.6l-2-1.600ZM12 15.500a3.500 3.500 0 1 1 0-7 3.500 3.500 0 0 1 0 7Z"/></svg>',
+  shield: '<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M12 2 4 5v6c0 5 3.400 9.700 8 11 4.600-1.300 8-6 8-11V5l-8-3Zm-1.200 14.200-3.500-3.500 1.400-1.400 2.100 2.100 4.500-4.500 1.400 1.400-5.900 5.900Z"/></svg>',
+  chev: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
+};
 async function showHome() {
   const ps = (await db.all('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
-  app.innerHTML = `<header><h1>🎬 릴스·쇼츠 메이커</h1><button class="ghost" id="set">⚙️</button></header>
+  app.innerHTML = `<header class="home"><img class="logo" src="icons/icon-192.png" alt=""><h1>릴스·쇼츠 메이커</h1><button class="iconbtn" id="set" aria-label="설정">${ICON.gear}</button></header>
   <div class="home-body">
-    <div class="hero"><h2>휴대폰만으로 세로 영상 완성</h2><div class="mut">대본이나 사진·영상을 넣으면 자막·전환·음악이 들어간 9:16 영상으로 만들어 드려요. 모든 작업은 이 기기 안에서 처리됩니다.</div></div>
-    ${ps.length ? ps.map((p) => `<div class="proj" data-id="${p.id}"><canvas width="108" height="192"></canvas><div class="info"><b>${esc(p.name)}</b><span class="mut">장면 ${p.scenes.length}개 · ${fmt(totalDuration(p))} · ${new Date(p.updatedAt).toLocaleDateString('ko-KR')}</span></div><button class="ghost" data-menu>⋯</button></div>`).join('') : '<div class="empty">아직 만든 영상이 없어요.<br>아래 버튼으로 시작해 보세요.</div>'}
+    <div class="hero"><img class="art" src="icons/art.webp" alt=""><div class="txt">
+      <div class="l1">휴대폰만으로</div><div class="l2"><span class="c1">세로</span> <span class="c2">영상</span> 완성</div>
+      <p>대본이나 사진·영상을 넣으면 자막·전환·음악이 들어간 9:16 영상으로 만들어 드려요.</p>
+      <div class="badge">${ICON.shield}모든 작업은 이 기기 안에서 처리</div>
+    </div></div>
+    ${ps.length ? `<div class="sec">내 영상 ${ps.length}개</div>` + ps.map((p) => `<div class="proj" data-id="${p.id}"><canvas width="108" height="192"></canvas><div class="info"><b>${esc(p.name)}</b><span class="mut">장면 ${p.scenes.length}개 · ${fmt(totalDuration(p))} · ${new Date(p.updatedAt).toLocaleDateString('ko-KR')}</span></div><button class="ghost" data-menu>⋯</button></div>`).join('') : '<div class="empty"><div class="pod"><img src="icons/art.webp" alt=""></div><b>아직 만든 영상이 없어요.</b><span>아래 버튼으로 시작해 보세요.</span></div>'}
   </div>
   <button class="pri fab" id="new">＋ 새 영상 만들기</button>`;
   $('#new').onclick = newSheet;
@@ -190,10 +199,11 @@ function renameSheet(p, done) {
 }
 function newSheet() {
   const L = sheet('새 영상 만들기', `
-    <button class="big" data-act="ai"><b>🤖 AI로 만들기</b><span class="mut">주제만 적으면 AI가 대본·자막·해시태그까지 작성</span></button>
-    <button class="big" data-act="script"><b>📝 대본으로 만들기</b><span class="mut">글을 붙여넣으면 문장마다 장면과 자막을 자동 생성</span></button>
-    <button class="big" data-act="media"><b>🖼 사진·영상으로 만들기</b><span class="mut">갤러리에서 여러 개를 고르면 순서대로 이어 붙임</span></button>
-    <button class="big" data-act="blank"><b>➕ 빈 프로젝트</b><span class="mut">처음부터 직접 구성</span></button>`);
+    ${[['ai', 't1', '🤖', 'AI로 만들기', '주제만 적으면 AI가 대본·자막·해시태그까지 작성'],
+      ['script', 't2', '📝', '대본으로 만들기', '글을 붙여넣으면 문장마다 장면과 자막을 자동 생성'],
+      ['media', 't3', '🖼️', '사진·영상으로 만들기', '갤러리에서 여러 개를 고르면 순서대로 이어 붙임'],
+      ['blank', 't4', '＋', '빈 프로젝트', '처음부터 직접 구성']]
+    .map(([act, t, e, title, sub]) => `<button class="opt" data-act="${act}"><i class="tile ${t}">${e}</i><span><b>${title}</b><small>${sub}</small></span>${ICON.chev}</button>`).join('')}`);
   const create = async (p) => { await db.put('projects', p); openEditor(p.id); };
   wire(L, {
     ai: () => { L.close(); aiSheet(create); },
