@@ -19,7 +19,7 @@ async function call(body, onWait, waits = 2) {
     const idx = (cursor + n) % keys.length;
     let r;
     try {
-      r = await fetch(URL_, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': keys[idx], 'Api-Revision': '2026-05-20' }, body: JSON.stringify(body) });
+      r = await fetch(URL_, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': keys[idx] }, body: JSON.stringify(body) });
     } catch { throw new Error('인터넷 연결을 확인해 주세요.'); }
     const j = await r.json().catch(() => ({}));
     if (r.ok) { cursor = idx; return j; }
