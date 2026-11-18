@@ -147,6 +147,9 @@ export function drawFrame(ctx, p, t, assets) {
   } else drawScene(ctx, p, s, local, assets);
 }
 
+// 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 끝을 넘으면 반복)
+const clipTime = (s, local, v) => ((s.trimStart || 0) + local) % (v.duration || 1);
+
 // 영상 클립을 현재 시각에 맞춘다 (미리보기·실시간 녹화용)
 export function syncVideos(p, t, assets, playing) {
   const { i, local } = p.scenes.length ? sceneAt(p, t) : { i: -1, local: 0 };
@@ -155,7 +158,7 @@ export function syncVideos(p, t, assets, playing) {
     if (a.kind !== 'video') continue;
     const v = a.src;
     if (id !== active) { if (!v.paused) v.pause(); continue; }
-    const target = local % (v.duration || 1);
+    const target = clipTime(p.scenes[i], local, v);
     if (playing) {
       if (Math.abs(v.currentTime - target) > 0.4) v.currentTime = target;
       if (v.paused) v.play().catch(() => {});
@@ -172,7 +175,7 @@ export async function seekVideos(p, t, assets) {
   const { i, local } = sceneAt(p, t);
   const a = assets.get(p.scenes[i].mediaId);
   if (!a || a.kind !== 'video') return;
-  const v = a.src, target = local % (v.duration || 1);
+  const v = a.src, target = clipTime(p.scenes[i], local, v);
   if (Math.abs(v.currentTime - target) < 0.001 && v.readyState >= 2) return;
   await new Promise((res) => {
     const done = () => { v.removeEventListener('seeked', done); clearTimeout(to); res(); };
@@ -191,12 +194,12 @@ export async function mixAudio(p, getBlob) {
     try { const b = await getBlob(id); return b ? await ctx.decodeAudioData(await b.arrayBuffer()) : null; } catch { return null; }
   };
   let any = false;
-  const add = (buf, vol, when, dur, loop) => {
+  const add = (buf, vol, when, dur, loop, offset = 0) => {
     const src = ctx.createBufferSource(), g = ctx.createGain();
     src.buffer = buf; src.loop = !!loop; g.gain.value = vol;
     if (loop) { g.gain.setValueAtTime(vol, Math.max(0, total - 1.2)); g.gain.linearRampToValueAtTime(0, total); }
     src.connect(g).connect(ctx.destination);
-    if (dur) src.start(when, 0, dur); else src.start(when);
+    if (dur) src.start(when, Math.min(offset, Math.max(0, buf.duration - 0.05)), dur); else src.start(when);
     any = true;
   };
   const a = p.audio;
@@ -209,7 +212,7 @@ export async function mixAudio(p, getBlob) {
     if (s.mediaKind === 'video' && s.clipAudio) {
       if (!cache.has(s.mediaId)) cache.set(s.mediaId, await decode(s.mediaId));
       const b = cache.get(s.mediaId);
-      if (b) add(b, 1, t, s.duration);
+      if (b) add(b, 1, t, s.duration, false, s.trimStart || 0);
     }
     t += s.duration;
   }

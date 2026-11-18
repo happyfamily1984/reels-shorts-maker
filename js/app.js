@@ -398,6 +398,7 @@ function sceneSheet() {
   const E = cur, p = E.p, s = p.scenes[E.sel];
   if (!s) return addSheet();
   pause();
+  const vdur = s.mediaKind === 'video' ? (E.assets.get(s.mediaId)?.dur || 0) : 0;
   const L = sheet(`장면 ${E.sel + 1} 편집`, `
     <label>자막</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
     <label>읽을 문장 (AI 음성용 · 비우면 자막을 읽음)</label><input type="text" id="nr" value="${esc(s.narration || '')}" placeholder="자막과 다르게 읽고 싶을 때만 입력">
@@ -406,12 +407,21 @@ function sceneSheet() {
     <label>자막 효과</label>${chips('textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], s.textAnim)}
     <label>화면 움직임</label>${chips('motion', [['zoomIn', '줌 인'], ['zoomOut', '줌 아웃'], ['panL', '← 이동'], ['panR', '이동 →'], ['none', '고정']], s.motion)}
     ${s.mediaId ? `<label>화면 맞춤</label>${chips('fit', [['cover', '꽉 채우기'], ['contain', '전체 보기(흐린 배경)']], s.fit)}` : `<label>배경색</label>${swatches('bg', BGS.map((c, i) => ({ v: i, css: `linear-gradient(135deg,${c[0]},${c[1]})` })), s.bg)}`}
+    ${s.mediaKind === 'video' ? `<label>✂ 영상 시작 지점 <b id="tv">${(s.trimStart || 0).toFixed(1)}</b>초 (원본 ${vdur.toFixed(1)}초)</label><input type="range" id="tr" min="0" max="${Math.max(0, vdur - 0.5).toFixed(1)}" step="0.1" value="${s.trimStart || 0}">` : ''}
     ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
     <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}</div>
-    <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
+    <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="split">나누기</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
   $('#tx', L.el).oninput = (e) => { s.text = e.target.value; if (!s.narration) dropTts(s); changed(); };
   $('#nr', L.el).oninput = (e) => { s.narration = e.target.value; dropTts(s); changed({ strip: false }); };
   $('#du', L.el).oninput = (e) => { s.duration = +e.target.value; $('#dv', L.el).textContent = s.duration; changed({ audio: true }); };
+  const tr = $('#tr', L.el);
+  if (tr) tr.oninput = () => {
+    s.trimStart = +tr.value; $('#tv', L.el).textContent = s.trimStart.toFixed(1);
+    // 남은 원본보다 장면이 길면 장면 길이를 줄인다
+    const room = Math.max(0.5, Math.floor((vdur - s.trimStart) * 2) / 2);
+    if (s.duration > room) { s.duration = room; $('#du', L.el).value = room; $('#dv', L.el).textContent = room; }
+    E.t = sceneStart(p, E.sel); changed({ audio: true });
+  };
   bindChips(L.el, (k, v) => {
     if (k === 'bg') s.bg = +v; else if (k === 'clipAudio') s.clipAudio = v === '1'; else s[k] = v;
     changed({ audio: k === 'clipAudio' });
@@ -424,6 +434,15 @@ function sceneSheet() {
   };
   wire(L, {
     left: () => move(-1), right: () => move(1),
+    split: () => {
+      // 재생 위치에서 장면을 둘로 나눈다 (영상 클립은 뒤쪽 조각이 이어서 재생됨)
+      const at = Math.round((E.t - sceneStart(p, E.sel)) * 2) / 2;
+      if (at < 0.5 || s.duration - at < 0.5) return toast('나눌 위치로 재생 막대를 옮긴 뒤 눌러 주세요 (앞뒤 0.5초 이상)');
+      const rest = { ...s, id: uid(), duration: s.duration - at, ttsId: null };
+      if (s.mediaKind === 'video') rest.trimStart = (s.trimStart || 0) + at;
+      s.duration = at; p.scenes.splice(E.sel + 1, 0, rest);
+      changed({ audio: true }); L.close(); toast('장면을 나눴어요');
+    },
     dup: () => { p.scenes.splice(E.sel + 1, 0, { ...s, id: uid() }); E.sel++; changed({ audio: true }); L.close(); toast('장면을 복제했어요'); },
     del: () => { p.scenes.splice(E.sel, 1); changed({ audio: true }); E.t = p.scenes.length ? sceneStart(p, E.sel) : 0; L.close(); },
     rm: () => { s.mediaId = null; s.mediaKind = null; changed({ audio: true }); L.close(); },
