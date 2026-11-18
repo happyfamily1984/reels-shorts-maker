@@ -1,0 +1,519 @@
+import * as db from './db.js';
+import { W, H, BGS, drawFrame, drawScene, syncVideos, mixAudio, totalDuration, sceneStart, sceneAt } from './render.js';
+import { exportVideo } from './exporter.js';
+
+const $ = (s, r = document) => r.querySelector(s);
+const app = $('#app'), layers = $('#layers');
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+let toastTo;
+function toast(msg) { const el = $('#toast'); el.textContent = msg; el.classList.add('on'); clearTimeout(toastTo); toastTo = setTimeout(() => el.classList.remove('on'), 2400); }
+
+/* ───────── 뒤로가기 ─────────
+   뒤로가기 = 직전 행동(열린 창) 취소 → 이전 화면 → 홈에서는 종료 확인 */
+const backStack = [];
+let exiting = false;
+history.replaceState({ base: 1 }, '');
+history.pushState({ guard: 1 }, '');
+addEventListener('popstate', () => {
+  if (exiting) { history.back(); return; }
+  history.pushState({ guard: 1 }, '');
+  goBack();
+});
+function goBack() { const fn = backStack.pop(); if (fn) fn(); else askExit(); }
+async function askExit() {
+  if (!(await confirmDlg('앱을 종료하겠습니까?'))) return;
+  exiting = true;
+  history.back();
+  try { window.close(); } catch {}
+  setTimeout(() => {
+    layers.innerHTML = '';
+    app.innerHTML = '<div class="empty" style="margin-top:40vh">앱이 종료되었습니다.<br><br><button id="re">다시 열기</button></div>';
+    $('#re').onclick = () => location.reload();
+  }, 500);
+}
+
+/* ───────── 시트·대화상자 ───────── */
+function openLayer(inner, cls = '') {
+  const el = document.createElement('div');
+  el.className = 'backdrop ' + cls; el.innerHTML = inner; layers.append(el);
+  const L = { el, onClose: null };
+  const entry = () => { el.remove(); L.onClose && L.onClose(); };
+  backStack.push(entry);
+  L.close = () => { const i = backStack.indexOf(entry); if (i >= 0) { backStack.splice(i, 1); entry(); } };
+  el.addEventListener('click', (e) => { if (e.target === el) L.close(); });
+  return L;
+}
+const sheet = (title, body) => openLayer(`<div class="sheet"><h3><span>${title}</span><button class="ghost" data-x>✕</button></h3>${body}</div>`);
+function wire(L, acts) {
+  L.el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-x]')) return L.close();
+    const b = e.target.closest('[data-act]');
+    if (b && acts[b.dataset.act]) acts[b.dataset.act](b);
+  });
+}
+function confirmDlg(msg, yes = '예', no = '아니오') {
+  return new Promise((res) => {
+    const L = openLayer(`<div class="dialog"><div>${esc(msg)}</div><div class="row"><button data-n>${no}</button><button class="pri" data-y>${yes}</button></div></div>`, 'center');
+    let ans = false;
+    L.onClose = () => res(ans);
+    $('[data-y]', L.el).onclick = () => { ans = true; L.close(); };
+    $('[data-n]', L.el).onclick = () => L.close();
+  });
+}
+function chips(key, opts, val) {
+  return `<div class="chips" data-key="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${String(v) === String(val) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+}
+function swatches(key, colors, val) {
+  return `<div class="chips" data-key="${key}">${colors.map((c, i) => `<button class="sw ${String(c.v) === String(val) ? 'on' : ''}" data-v="${c.v}" style="background:${c.css}"></button>`).join('')}</div>`;
+}
+function bindChips(root, fn) {
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest('.chips[data-key] button'); if (!b) return;
+    b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    fn(b.parentElement.dataset.key, b.dataset.v);
+  });
+}
+function pickFiles(accept, multiple) {
+  return new Promise((res) => {
+    const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.multiple = !!multiple;
+    i.onchange = () => res([...i.files]); i.click();
+  });
+}
+
+/* ───────── 데이터 ───────── */
+const MOTIONS = ['zoomIn', 'panL', 'zoomOut', 'panR'];
+const newProject = (name) => ({
+  id: uid(), name, createdAt: Date.now(), updatedAt: Date.now(), scenes: [], media: [], transition: 'fade',
+  style: { caption: 'outline', color: '#ffffff', size: 84, font: 'gothic' },
+  audio: { musicId: null, musicName: '', musicVol: 0.5, narrationId: null, narrationVol: 1 },
+});
+const newScene = (o) => ({ id: uid(), text: '', duration: 3, mediaId: null, mediaKind: null, bg: 0, motion: 'zoomIn', textPos: 'bottom', textAnim: 'pop', fit: 'cover', clipAudio: true, ...o });
+const autoDur = (t) => Math.min(8, Math.max(2, Math.round((1 + t.length / 6) * 2) / 2));
+function splitScript(text) {
+  const out = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim(); if (!line) continue;
+    if (line.length <= 40) { out.push(line); continue; }
+    let buf = '';
+    for (const s of line.match(/[^.!?…]+[.!?…]*\s*/g) || [line]) {
+      if ((buf + s).length > 40 && buf) { out.push(buf.trim()); buf = s; } else buf += s;
+    }
+    if (buf.trim()) out.push(buf.trim());
+  }
+  return out;
+}
+async function storeMedia(p, blob, kind, name) {
+  const id = uid(); await db.put('media', { id, blob, kind, name }); p.media.push(id); return id;
+}
+async function importFile(p, file) {
+  if (file.type.startsWith('video/')) return { id: await storeMedia(p, file, 'video', file.name), kind: 'video' };
+  // 큰 사진은 메모리 절약을 위해 긴 변 2160px로 줄여 저장
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 2160 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
+  const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+  return { id: await storeMedia(p, blob, 'image', file.name), kind: 'image' };
+}
+async function loadAsset(id) {
+  const rec = await db.get('media', id); if (!rec) return null;
+  if (rec.kind === 'image') { const b = await createImageBitmap(rec.blob); return { kind: 'image', src: b, w: b.width, h: b.height }; }
+  if (rec.kind === 'video') {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = URL.createObjectURL(rec.blob);
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('영상을 열 수 없습니다')); setTimeout(res, 5000); });
+    return { kind: 'video', src: v, get w() { return v.videoWidth; }, get h() { return v.videoHeight; }, dur: v.duration || 5 };
+  }
+  return null;
+}
+function thumb(cv, p, s, assets) {
+  const c = cv.getContext('2d');
+  c.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+  drawScene(c, p, s, s.duration, assets);
+}
+
+/* ───────── 홈 ───────── */
+async function showHome() {
+  const ps = (await db.all('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
+  app.innerHTML = `<header><h1>🎬 릴스·쇼츠 메이커</h1></header>
+  <div class="home-body">
+    <div class="hero"><h2>휴대폰만으로 세로 영상 완성</h2><div class="mut">대본이나 사진·영상을 넣으면 자막·전환·음악이 들어간 9:16 영상으로 만들어 드려요. 모든 작업은 이 기기 안에서 처리됩니다.</div></div>
+    ${ps.length ? ps.map((p) => `<div class="proj" data-id="${p.id}"><canvas width="108" height="192"></canvas><div class="info"><b>${esc(p.name)}</b><span class="mut">장면 ${p.scenes.length}개 · ${fmt(totalDuration(p))} · ${new Date(p.updatedAt).toLocaleDateString('ko-KR')}</span></div><button class="ghost" data-menu>⋯</button></div>`).join('') : '<div class="empty">아직 만든 영상이 없어요.<br>아래 버튼으로 시작해 보세요.</div>'}
+  </div>
+  <button class="pri fab" id="new">＋ 새 영상 만들기</button>`;
+  $('#new').onclick = newSheet;
+  for (const el of app.querySelectorAll('.proj')) {
+    const p = ps.find((x) => x.id === el.dataset.id);
+    el.onclick = (e) => (e.target.closest('[data-menu]') ? projMenu(p) : openEditor(p.id));
+    const s = p.scenes[0];
+    if (s) {
+      const assets = new Map();
+      const draw = () => thumb($('canvas', el), p, s, assets);
+      draw();
+      if (s.mediaKind === 'image') loadAsset(s.mediaId).then((a) => { if (a) { assets.set(s.mediaId, a); draw(); } }).catch(() => {});
+    }
+  }
+}
+function projMenu(p) {
+  const L = sheet(esc(p.name), `<button class="big" data-act="ren">✏️ 이름 바꾸기</button><button class="big danger" data-act="del">🗑 삭제</button>`);
+  wire(L, {
+    ren: () => { L.close(); renameSheet(p, showHome); },
+    del: async () => {
+      L.close();
+      if (!(await confirmDlg(`"${p.name}"을(를) 삭제할까요?`, '삭제', '취소'))) return;
+      for (const id of p.media) await db.del('media', id);
+      await db.del('projects', p.id); showHome();
+    },
+  });
+}
+function renameSheet(p, done) {
+  const L = sheet('이름 바꾸기', `<input type="text" id="nm" value="${esc(p.name)}" maxlength="40"><div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
+  wire(L, { ok: async () => { p.name = $('#nm', L.el).value.trim() || p.name; p.updatedAt = Date.now(); await db.put('projects', p); L.close(); done(); } });
+}
+function newSheet() {
+  const L = sheet('새 영상 만들기', `
+    <button class="big" data-act="script"><b>📝 대본으로 만들기</b><span class="mut">글을 붙여넣으면 문장마다 장면과 자막을 자동 생성</span></button>
+    <button class="big" data-act="media"><b>🖼 사진·영상으로 만들기</b><span class="mut">갤러리에서 여러 개를 고르면 순서대로 이어 붙임</span></button>
+    <button class="big" data-act="blank"><b>➕ 빈 프로젝트</b><span class="mut">처음부터 직접 구성</span></button>`);
+  const create = async (p) => { await db.put('projects', p); openEditor(p.id); };
+  wire(L, {
+    blank: () => { L.close(); create(newProject('새 영상')); },
+    media: async () => {
+      const files = await pickFiles('image/*,video/*', true); L.close();
+      if (!files.length) return;
+      const p = newProject('새 영상'); toast('미디어를 불러오는 중…');
+      await addMediaScenes(p, files, null); create(p);
+    },
+    script: () => {
+      L.close();
+      const S = sheet('대본 입력', `<textarea id="sc" rows="9" placeholder="예)\n요즘 뜨는 제주 맛집 3곳!\n첫 번째, 해녀가 직접 잡은 해산물\n두 번째, 줄 서서 먹는 고기국수\n저장해 두고 꼭 가보세요"></textarea><div class="mut" style="margin-top:6px">줄바꿈·문장 단위로 장면이 나뉘고 길이는 글자 수에 맞춰 자동 설정됩니다.</div><div class="row" style="margin-top:12px"><button class="pri" data-act="ok">영상 만들기</button></div>`);
+      wire(S, {
+        ok: () => {
+          const lines = splitScript($('#sc', S.el).value);
+          if (!lines.length) return toast('대본을 입력해 주세요');
+          const p = newProject(lines[0].slice(0, 20));
+          p.scenes = lines.map((t, i) => newScene({ text: t, duration: autoDur(t), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4] }));
+          S.close(); create(p);
+        },
+      });
+    },
+  });
+}
+async function addMediaScenes(p, files, assets) {
+  for (const f of files) {
+    try {
+      const m = await importFile(p, f);
+      const a = await loadAsset(m.id);
+      if (assets) assets.set(m.id, a);
+      const n = p.scenes.length;
+      p.scenes.push(m.kind === 'video'
+        ? newScene({ mediaId: m.id, mediaKind: 'video', motion: 'none', duration: Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)) })
+        : newScene({ mediaId: m.id, mediaKind: 'image', motion: MOTIONS[n % 4] }));
+    } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name}`); }
+  }
+}
+
+/* ───────── 편집기 ───────── */
+let cur = null;
+async function openEditor(id) {
+  const p = await db.get('projects', id); if (!p) return showHome();
+  const E = cur = { p, assets: new Map(), t: 0, playing: false, sel: 0, mix: null, mixDirty: true, actx: null, node: null, t0: 0, busy: false };
+  app.innerHTML = `<header><button class="ghost" id="back">←</button><h1 id="pname"></h1><button class="pri" id="export">내보내기</button></header>
+  <div class="stage"><canvas id="cv" width="540" height="960"></canvas></div>
+  <div class="transport"><button id="play">▶</button><input type="range" id="seek" min="0" max="1000" value="0"><span class="mut" id="time"></span></div>
+  <div class="strip" id="strip"></div>
+  <div class="tools">
+    <button data-tool="scene"><i>🎞</i>장면 편집</button><button data-tool="script"><i>📝</i>대본</button>
+    <button data-tool="style"><i>🎨</i>스타일</button><button data-tool="audio"><i>🎵</i>오디오</button>
+  </div>`;
+  $('#pname').textContent = p.name;
+  backStack.push(closeEditor);
+  $('#back').onclick = goBack;
+  $('#pname').onclick = () => renameSheet(p, () => { $('#pname').textContent = p.name; });
+  $('#export').onclick = exportSheet;
+  $('#play').onclick = $('#cv').onclick = () => (E.playing ? pause() : play());
+  $('#seek').oninput = (e) => { pause(); E.t = e.target.value / 1000 * totalDuration(p); E.sel = sceneAt(p, E.t).i; markSel(); };
+  app.querySelector('.tools').onclick = (e) => {
+    const b = e.target.closest('[data-tool]'); if (!b) return;
+    ({ scene: sceneSheet, script: scriptSheet, style: styleSheet, audio: audioSheet })[b.dataset.tool]();
+  };
+  $('#strip').onclick = (e) => {
+    const b = e.target.closest('.sc'); if (!b) return;
+    if (b.dataset.add !== undefined) return addSheet();
+    const i = +b.dataset.i;
+    if (i === E.sel && !E.playing) return sceneSheet();
+    pause(); E.sel = i; E.t = sceneStart(p, i) + Math.min(0.8, p.scenes[i].duration * 0.5); markSel();
+  };
+  const ids = new Set(p.scenes.map((s) => s.mediaId).filter(Boolean));
+  await Promise.all([...ids].map(async (mid) => { try { const a = await loadAsset(mid); if (a) E.assets.set(mid, a); } catch (e) { console.warn(e); } }));
+  if (cur !== E) return;
+  if (p.scenes.length) E.t = Math.min(0.8, p.scenes[0].duration * 0.5); // 첫 자막이 보이는 지점에서 시작
+  renderStrip();
+  const ctx = $('#cv').getContext('2d');
+  const loop = () => {
+    if (cur !== E) return;
+    requestAnimationFrame(loop);
+    if (E.busy) return;
+    const total = totalDuration(p);
+    if (E.playing) {
+      E.t = (performance.now() - E.t0) / 1000;
+      if (E.t >= total) { E.t = total; pause(); E.onEnd && E.onEnd(); }
+      const i = sceneAt(p, E.t).i; if (i !== E.sel) { E.sel = i; markSel(true); }
+    }
+    syncVideos(p, E.t, E.assets, E.playing);
+    drawFrame(ctx, p, Math.min(E.t, Math.max(0, total - 0.001)), E.assets);
+    if (!p.scenes.length) {
+      ctx.fillStyle = '#888'; ctx.font = '48px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('아래 ＋ 를 눌러 장면을 추가하세요', W / 2, H / 2);
+    }
+    $('#time').textContent = `${fmt(E.t)} / ${fmt(total)}`;
+    if (E.playing) $('#seek').value = total ? E.t / total * 1000 : 0;
+  };
+  loop();
+}
+function closeEditor() {
+  const E = cur; if (!E) return;
+  pause(); cur = null;
+  for (const a of E.assets.values()) { if (a.kind === 'video') { a.src.pause(); URL.revokeObjectURL(a.src.src); } else a.src.close && a.src.close(); }
+  E.actx && E.actx.close();
+  clearTimeout(saveTo); db.put('projects', E.p).then(showHome);
+}
+let saveTo;
+function changed({ audio = false, strip = true } = {}) {
+  const E = cur; if (!E) return;
+  E.p.updatedAt = Date.now();
+  if (audio) E.mixDirty = true;
+  E.sel = Math.max(0, Math.min(E.sel, E.p.scenes.length - 1));
+  E.t = Math.min(E.t, totalDuration(E.p));
+  if (strip) renderStrip();
+  clearTimeout(saveTo); saveTo = setTimeout(() => db.put('projects', E.p), 400);
+}
+function renderStrip() {
+  const E = cur, p = E.p, el = $('#strip');
+  el.innerHTML = p.scenes.map((s, i) => `<button class="sc ${i === E.sel ? 'sel' : ''}" data-i="${i}"><canvas width="108" height="192"></canvas><span>${s.duration}s</span></button>`).join('') + '<button class="sc add" data-add>＋</button>';
+  el.querySelectorAll('.sc[data-i]').forEach((b) => thumb($('canvas', b), p, p.scenes[+b.dataset.i], E.assets));
+}
+function markSel(scroll) {
+  document.querySelectorAll('#strip .sc[data-i]').forEach((b) => {
+    const on = +b.dataset.i === cur.sel; b.classList.toggle('sel', on);
+    if (on && scroll) b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+  });
+  const total = totalDuration(cur.p); $('#seek').value = total ? cur.t / total * 1000 : 0;
+}
+async function getMix() {
+  const E = cur;
+  if (E.mixDirty) { E.mix = await mixAudio(E.p, async (id) => (await db.get('media', id))?.blob); E.mixDirty = false; }
+  return E.mix;
+}
+async function play(silent) {
+  const E = cur; if (!E || E.playing || !E.p.scenes.length) return;
+  if (E.t >= totalDuration(E.p) - 0.05) E.t = 0;
+  if (!silent) {
+    E.actx = E.actx || new AudioContext(); E.actx.resume();
+    const mix = await getMix();
+    if (cur !== E) return;
+    if (mix) { E.node = E.actx.createBufferSource(); E.node.buffer = mix; E.node.connect(E.actx.destination); E.node.start(0, E.t); }
+  }
+  E.t0 = performance.now() - E.t * 1000; E.playing = true; $('#play').textContent = '⏸';
+}
+function pause() {
+  const E = cur; if (!E) return;
+  E.playing = false;
+  if (E.node) { try { E.node.stop(); } catch {} E.node = null; }
+  const b = $('#play'); if (b) b.textContent = '▶';
+}
+
+/* ───────── 장면 추가·편집 ───────── */
+function addSheet() {
+  const E = cur, p = E.p;
+  const L = sheet('장면 추가', `<button class="big" data-act="media"><b>🖼 사진·영상 추가</b><span class="mut">여러 개 선택 가능</span></button><button class="big" data-act="text"><b>🔤 글자 장면 추가</b><span class="mut">배경색 위에 자막만 있는 장면</span></button>`);
+  wire(L, {
+    media: async () => {
+      const files = await pickFiles('image/*,video/*', true); L.close();
+      if (!files.length) return; toast('미디어를 불러오는 중…');
+      await addMediaScenes(p, files, E.assets);
+      E.sel = p.scenes.length - 1; E.t = sceneStart(p, E.sel); changed({ audio: true });
+    },
+    text: () => {
+      L.close(); p.scenes.push(newScene({ text: '여기에 자막 입력', bg: p.scenes.length % (BGS.length - 1) }));
+      E.sel = p.scenes.length - 1; E.t = sceneStart(p, E.sel) + 0.8; changed(); sceneSheet();
+    },
+  });
+}
+function sceneSheet() {
+  const E = cur, p = E.p, s = p.scenes[E.sel];
+  if (!s) return addSheet();
+  pause();
+  const L = sheet(`장면 ${E.sel + 1} 편집`, `
+    <label>자막</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
+    <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
+    <label>자막 위치</label>${chips('textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], s.textPos)}
+    <label>자막 효과</label>${chips('textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], s.textAnim)}
+    <label>화면 움직임</label>${chips('motion', [['zoomIn', '줌 인'], ['zoomOut', '줌 아웃'], ['panL', '← 이동'], ['panR', '이동 →'], ['none', '고정']], s.motion)}
+    ${s.mediaId ? `<label>화면 맞춤</label>${chips('fit', [['cover', '꽉 채우기'], ['contain', '전체 보기(흐린 배경)']], s.fit)}` : `<label>배경색</label>${swatches('bg', BGS.map((c, i) => ({ v: i, css: `linear-gradient(135deg,${c[0]},${c[1]})` })), s.bg)}`}
+    ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
+    <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}</div>
+    <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
+  $('#tx', L.el).oninput = (e) => { s.text = e.target.value; changed(); };
+  $('#du', L.el).oninput = (e) => { s.duration = +e.target.value; $('#dv', L.el).textContent = s.duration; changed({ audio: true }); };
+  bindChips(L.el, (k, v) => {
+    if (k === 'bg') s.bg = +v; else if (k === 'clipAudio') s.clipAudio = v === '1'; else s[k] = v;
+    changed({ audio: k === 'clipAudio' });
+    if (k === 'textAnim' || k === 'motion') { E.t = sceneStart(p, E.sel); }
+  });
+  const move = (d) => {
+    const j = E.sel + d; if (j < 0 || j >= p.scenes.length) return;
+    [p.scenes[E.sel], p.scenes[j]] = [p.scenes[j], p.scenes[E.sel]]; E.sel = j; E.t = sceneStart(p, j) + 0.8;
+    changed({ audio: true }); $('h3 span', L.el).textContent = `장면 ${j + 1} 편집`;
+  };
+  wire(L, {
+    left: () => move(-1), right: () => move(1),
+    dup: () => { p.scenes.splice(E.sel + 1, 0, { ...s, id: uid() }); E.sel++; changed({ audio: true }); L.close(); toast('장면을 복제했어요'); },
+    del: () => { p.scenes.splice(E.sel, 1); changed({ audio: true }); E.t = p.scenes.length ? sceneStart(p, E.sel) : 0; L.close(); },
+    rm: () => { s.mediaId = null; s.mediaKind = null; changed({ audio: true }); L.close(); },
+    media: async () => {
+      const [f] = await pickFiles('image/*,video/*'); if (!f) return;
+      try {
+        const m = await importFile(p, f); const a = await loadAsset(m.id); E.assets.set(m.id, a);
+        s.mediaId = m.id; s.mediaKind = m.kind;
+        if (m.kind === 'video') { s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)); s.motion = 'none'; }
+        changed({ audio: true }); L.close();
+      } catch { toast('파일을 불러오지 못했어요'); }
+    },
+  });
+}
+function scriptSheet() {
+  const E = cur, p = E.p;
+  const L = sheet('대본', `<div class="mut">한 줄이 한 장면의 자막이 됩니다. 장면보다 줄이 많으면 새 장면이 추가돼요.</div>
+    <textarea id="sc" rows="10" style="margin-top:8px">${esc(p.scenes.map((s) => s.text.replace(/\n/g, ' ')).join('\n'))}</textarea>
+    <label><input type="checkbox" id="ad"> 자막 길이에 맞춰 장면 길이 자동 조절 (영상 클립 제외)</label>
+    <div class="row"><button class="pri" data-act="ok">적용</button></div>`);
+  wire(L, {
+    ok: () => {
+      const lines = $('#sc', L.el).value.split('\n').map((x) => x.trim()), auto = $('#ad', L.el).checked;
+      while (lines.length && !lines[lines.length - 1]) lines.pop();
+      lines.forEach((t, i) => {
+        if (!p.scenes[i]) p.scenes.push(newScene({ bg: i % (BGS.length - 1), motion: MOTIONS[i % 4], duration: autoDur(t) }));
+        const s = p.scenes[i]; s.text = t;
+        if (auto && s.mediaKind !== 'video' && t) s.duration = autoDur(t);
+      });
+      for (let i = lines.length; i < p.scenes.length; i++) p.scenes[i].text = '';
+      changed({ audio: true }); L.close();
+    },
+  });
+}
+function styleSheet() {
+  const E = cur, p = E.p, st = p.style;
+  const colors = ['#ffffff', '#ffe600', '#00e5ff', '#ff5c8a', '#7dff7a', '#ff9d2e'].map((c) => ({ v: c, css: c }));
+  const L = sheet('스타일', `
+    <label>자막 스타일</label>${chips('caption', [['outline', '테두리'], ['box', '박스'], ['neon', '네온'], ['shadow', '그림자']], st.caption)}
+    <label>자막 색</label>${swatches('color', colors, st.color)}
+    <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
+    <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
+    <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
+    <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
+    <label>모든 장면에 일괄 적용 — 자막 효과</label>${chips('all.textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], '')}`);
+  wire(L, {});
+  $('#sz', L.el).oninput = (e) => { st.size = +e.target.value; $('#sv', L.el).textContent = st.size; changed(); };
+  bindChips(L.el, (k, v) => {
+    if (k === 'transition') p.transition = v;
+    else if (k.startsWith('all.')) p.scenes.forEach((s) => { s[k.slice(4)] = v; });
+    else st[k] = v;
+    changed();
+  });
+}
+function audioSheet() {
+  const E = cur, a = E.p.audio;
+  pause();
+  const L = sheet('오디오', `
+    <label>배경음악 ${a.musicId ? `— ${esc(a.musicName)}` : '(없음)'}</label>
+    <div class="row"><button data-act="music">🎵 음악 파일 ${a.musicId ? '교체' : '선택'}</button>${a.musicId ? '<button data-act="rmMusic">제거</button>' : ''}</div>
+    <label>음악 크기</label><input type="range" id="mv" min="0" max="1" step="0.05" value="${a.musicVol}">
+    <label>내레이션 ${a.narrationId ? '(녹음됨)' : '(없음)'}</label>
+    <div class="row"><button data-act="rec">🎙 ${a.narrationId ? '다시 녹음' : '녹음하기'}</button>${a.narrationId ? '<button data-act="rmNar">제거</button>' : ''}</div>
+    <label>내레이션 크기</label><input type="range" id="nv" min="0" max="1.5" step="0.05" value="${a.narrationVol}">
+    <div class="mut" style="margin-top:10px">음악은 영상 길이에 맞춰 반복되고 끝에서 자연스럽게 줄어듭니다. 저작권이 허용된 음원만 사용하세요.</div>`);
+  $('#mv', L.el).oninput = (e) => { a.musicVol = +e.target.value; changed({ audio: true, strip: false }); };
+  $('#nv', L.el).oninput = (e) => { a.narrationVol = +e.target.value; changed({ audio: true, strip: false }); };
+  const reopen = () => { L.close(); changed({ audio: true, strip: false }); audioSheet(); };
+  wire(L, {
+    music: async () => {
+      const [f] = await pickFiles('audio/*'); if (!f) return;
+      a.musicId = await storeMedia(E.p, f, 'audio', f.name); a.musicName = f.name; reopen();
+    },
+    rmMusic: () => { a.musicId = null; a.musicName = ''; reopen(); },
+    rmNar: () => { a.narrationId = null; reopen(); },
+    rec: () => { L.close(); recordNarration(); },
+  });
+}
+async function recordNarration() {
+  const E = cur, p = E.p;
+  if (!p.scenes.length) return toast('먼저 장면을 추가해 주세요');
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { return toast('마이크 권한이 필요합니다'); }
+  const rec = new MediaRecorder(stream), parts = [];
+  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  const L = openLayer(`<div class="sheet"><h3><span>🔴 녹음 중 — 화면의 자막을 보며 읽어 주세요</span></h3><div class="row"><button class="pri" data-act="stop">녹음 종료</button></div></div>`, 'clear');
+  L.el.style.background = 'transparent';
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    if (cur !== E) return;
+    p.audio.narrationId = await storeMedia(p, new Blob(parts, { type: rec.mimeType }), 'audio', 'narration');
+    E.t = 0; changed({ audio: true, strip: false }); toast('내레이션을 저장했어요');
+  };
+  L.onClose = () => { E.onEnd = null; pause(); if (rec.state !== 'inactive') rec.stop(); };
+  wire(L, { stop: () => L.close() });
+  E.t = 0; E.onEnd = () => L.close();
+  rec.start(); play(true);
+}
+
+/* ───────── 내보내기 ───────── */
+function exportSheet() {
+  const E = cur, p = E.p;
+  if (!p.scenes.length) return toast('먼저 장면을 추가해 주세요');
+  pause();
+  let res = 1080, ctl = null, url = null, lock = null;
+  const L = sheet('내보내기', `<div id="ex">
+    <label>화질</label>${chips('res', [['1080', '1080×1920 (권장)'], ['720', '720×1280 (빠름)']], res)}
+    <div class="mut" style="margin:12px 0">길이 ${fmt(totalDuration(p))} · 30fps · 이 기기에서 바로 영상 파일을 만듭니다. 완료될 때까지 화면을 켜 두세요.</div>
+    <div class="row"><button class="pri" data-act="go">영상 만들기</button></div></div>`);
+  bindChips(L.el, (k, v) => { res = +v; });
+  L.onClose = () => { ctl && ctl.abort(); url && URL.revokeObjectURL(url); lock && lock.release().catch(() => {}); E.busy = false; };
+  wire(L, {
+    go: async () => {
+      const box = $('#ex', L.el);
+      box.innerHTML = `<div class="bar"><div id="pb"></div></div><div class="mut" id="pt">준비 중…</div><div class="row" style="margin-top:12px"><button data-x>취소</button></div>`;
+      ctl = new AbortController(); E.busy = true;
+      try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+      try {
+        const audioBuf = await getMix();
+        const w = res, h = res * 16 / 9;
+        const t0 = performance.now();
+        const out = await exportVideo({
+          p, assets: E.assets, audioBuf, w, h, fps: 30, bitrate: res === 1080 ? 8e6 : 4e6, signal: ctl.signal,
+          onProgress: (q) => { const b = $('#pb', L.el); if (b) { b.style.width = `${q * 100}%`; $('#pt', L.el).textContent = `영상 만드는 중… ${Math.round(q * 100)}%`; } },
+        });
+        const name = `${p.name.replace(/[\\/:*?"<>|]/g, '_')}.${out.ext}`;
+        const file = new File([out.blob], name, { type: out.blob.type });
+        url = URL.createObjectURL(out.blob);
+        const canShare = navigator.canShare && navigator.canShare({ files: [file] });
+        box.innerHTML = `<div class="result"><video src="${url}" controls playsinline loop></video></div>
+          <div class="mut" style="margin:8px 0">✅ 완성 · ${(out.blob.size / 1048576).toFixed(1)}MB · ${out.ext.toUpperCase()} · ${out.method} · ${((performance.now() - t0) / 1000).toFixed(1)}초 소요</div>
+          <div class="row">${canShare ? '<button class="pri" data-act="share">📤 인스타·유튜브로 공유</button>' : ''}<a class="dl" href="${url}" download="${esc(name)}" style="text-decoration:none"><button style="width:100%" class="${canShare ? '' : 'pri'}">💾 기기에 저장</button></a></div>
+          ${out.ext === 'webm' ? '<div class="mut" style="margin-top:8px">이 브라우저는 MP4 인코딩을 지원하지 않아 WebM으로 저장됩니다. 최신 Chrome에서 MP4로 만들어집니다.</div>' : ''}`;
+        L.share = () => navigator.share({ files: [file], title: p.name }).catch(() => {});
+      } catch (e) {
+        if (e.name !== 'AbortError') { console.error(e); box.innerHTML = `<div class="mut">내보내기에 실패했어요: ${esc(e.message || e)}</div>`; }
+      } finally {
+        E.busy = false; ctl = null; lock && lock.release().catch(() => {}); lock = null;
+      }
+    },
+    share: () => L.share && L.share(),
+  });
+}
+
+/* ───────── 시작 ───────── */
+showHome();
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

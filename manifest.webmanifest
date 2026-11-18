@@ -1,0 +1,16 @@
+{
+  "name": "릴스·쇼츠 메이커",
+  "short_name": "쇼츠메이커",
+  "description": "휴대폰만으로 인스타 릴스·유튜브 쇼츠용 세로 영상을 만드는 앱",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e0e12",
+  "theme_color": "#0e0e12",
+  "lang": "ko",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
