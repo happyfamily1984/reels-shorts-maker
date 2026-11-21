@@ -112,3 +112,9 @@ header.home h1 { font-size:22px; }
 a.dl { color:inherit; }
 a.dl button { color:var(--fg); }
 .sheet textarea.secret { -webkit-text-security:disc; font-family:monospace; }
+.imgc { display:flex; gap:12px; padding:12px 0; border-top:1px solid var(--line2); }
+.imgc canvas { width:72px; height:128px; border-radius:10px; flex:none; background:#000; }
+.imgc .b { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+.imgc .b > span { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.imgc textarea { font-size:13px; }
+.imgc .row { margin-top:0; }

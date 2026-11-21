@@ -2,6 +2,8 @@ package app.shortsmaker;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -189,6 +191,15 @@ public class MainActivity extends Activity {
 
     /** 웹앱에서 window.Android.* 로 부르는 기능들 */
     private class Bridge {
+        @JavascriptInterface
+        public boolean copy(String text) {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("prompt", text));
+                return true;
+            } catch (Exception e) { return false; }
+        }
+
         @JavascriptInterface
         public void exit() {
             runOnUiThread(MainActivity.this::finishAndRemoveTask);

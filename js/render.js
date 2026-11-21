@@ -149,7 +149,7 @@ export function drawFrame(ctx, p, t, assets) {
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   if (!p.scenes.length) return;
   const { i, local } = sceneAt(p, t);
-  const s = p.scenes[i], tr = p.transition;
+  const s = p.scenes[i], tr = s.transition || p.transition; // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
   if (i > 0 && tr !== 'none' && local < TD) {
     const q = ease(local / TD), prev = p.scenes[i - 1];
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();

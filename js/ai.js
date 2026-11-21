@@ -74,20 +74,24 @@ function parts(res, type) {
 }
 
 const SCHEMA = {
-  type: 'object', required: ['title', 'scenes', 'description', 'hashtags'],
+  type: 'object', required: ['title', 'look', 'scenes', 'description', 'hashtags'],
   properties: {
     title: { type: 'string' },
+    look: { type: 'string' },
     scenes: {
       type: 'array',
       items: {
-        type: 'object', required: ['caption', 'narration', 'emoji'],
-        properties: { caption: { type: 'string' }, narration: { type: 'string' }, emoji: { type: 'string' } },
+        type: 'object', required: ['caption', 'narration', 'emoji', 'image'],
+        properties: { caption: { type: 'string' }, narration: { type: 'string' }, emoji: { type: 'string' }, image: { type: 'string' } },
       },
     },
     description: { type: 'string' },
     hashtags: { type: 'array', items: { type: 'string' } },
   },
 };
+
+const IMAGE_RULES = `- image: 이 장면의 배경으로 쓸 세로(9:16) 이미지를 이미지 생성 AI에게 주문하는 그림 설명. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 자막이 화면 아래쪽에 올라가므로 주요 피사체는 화면 가운데~위쪽에 둡니다. 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 앞 장면에 나온 인물·물건이 다시 나오면 같은 생김새로 다시 묘사합니다.
+- look: 모든 장면 이미지에 공통으로 적용할 화풍 한 문장 (예: 밝은 자연광의 실사 사진, 따뜻한 파스텔 톤 일러스트). 주제와 분위기에 어울리게 고릅니다.`;
 
 const GUIDE = `당신은 인스타그램 릴스·유튜브 쇼츠 전문 대본 작가입니다. 아래 주제로 세로형 숏폼 영상 대본을 한국어로 써 주세요.
 
@@ -97,6 +101,7 @@ const GUIDE = `당신은 인스타그램 릴스·유튜브 쇼츠 전문 대본 
 - caption: 화면에 크게 뜨는 자막. 한눈에 읽히도록 22자 이내의 짧은 구어체로 씁니다.
 - narration: 그 장면에서 읽을 내레이션 한 문장. 음성 합성으로 읽히므로 자연스러운 말투로, 이모지·특수기호 없이 씁니다. 한국어 내레이션은 1초에 약 6자 속도입니다.
 - emoji: 장면 분위기에 맞는 이모지 딱 1개.
+${IMAGE_RULES}
 - title: 프로젝트 이름으로 쓸 20자 이내 제목.
 - description: 업로드할 때 붙일 설명글 2~3문장.
 - hashtags: '#'을 포함한 해시태그 5~8개.
@@ -112,6 +117,31 @@ export async function generateScript({ topic, tone, seconds }) {
   let out;
   try { out = JSON.parse(text); } catch { throw new Error('AI 응답을 읽지 못했어요. 다시 시도해 주세요.'); }
   if (!out.scenes?.length) throw new Error('대본이 비어 있어요. 다른 주제로 다시 시도해 주세요.');
+  return out;
+}
+
+// 이미 있는 장면(대본으로 만들기·직접 입력)에 이미지 설명을 붙인다
+const IMG_SCHEMA = {
+  type: 'object', required: ['look', 'images'],
+  properties: { look: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } },
+};
+export async function generateImageIdeas({ title, scenes }) {
+  const list = scenes.map((s, i) => `${i + 1}. 자막: ${s.text || '(없음)'}${s.narration ? ` / 내레이션: ${s.narration}` : ''}`).join('\n');
+  const res = await callText({
+    input: `당신은 숏폼 영상의 아트 디렉터입니다. 아래 세로형 영상의 장면마다 배경 이미지를 이미지 생성 AI로 만들려고 합니다. 한국어로 답하세요.
+
+- images: 장면 순서대로 정확히 ${scenes.length}개. 각 항목은 그 장면 이미지를 주문하는 그림 설명입니다. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 자막이 화면 아래쪽에 올라가므로 주요 피사체는 화면 가운데~위쪽에 둡니다. 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 같은 인물·물건이 여러 장면에 나오면 매번 같은 생김새로 묘사합니다.
+- look: 모든 장면 이미지에 공통으로 적용할 화풍 한 문장.
+
+영상 제목: ${title}
+장면:
+${list}`,
+    response_format: { type: 'text', mime_type: 'application/json', schema: IMG_SCHEMA },
+  });
+  const text = (typeof res.output_text === 'string' ? res.output_text : parts(res, 'text').map((p) => p.text).join('')).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  let out;
+  try { out = JSON.parse(text); } catch { throw new Error('AI 응답을 읽지 못했어요. 다시 시도해 주세요.'); }
+  if (!out.images?.length) throw new Error('이미지 설명을 받지 못했어요. 다시 시도해 주세요.');
   return out;
 }
 

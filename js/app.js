@@ -272,8 +272,9 @@ function aiSheet(create) {
         if (!L.el.isConnected) return;
         const p = newProject((out.title || topic).slice(0, 30));
         p.post = { description: out.description || '', hashtags: out.hashtags || [] };
+        p.look = out.look || ''; p.tone = tone;
         p.scenes = out.scenes.map((sc, i) => newScene({
-          text: sc.caption, narration: sc.narration || '',
+          text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '',
           stickers: sc.emoji ? [{ id: uid(), e: sc.emoji, x: 0.5, y: 0.3, size: 280, anim: 'bounce' }] : [],
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
@@ -307,7 +308,7 @@ async function openEditor(id) {
   <div class="strip" id="strip"></div>
   <div class="tools">
     <button data-tool="scene"><i>🎞</i>장면 편집</button><button data-tool="script"><i>📝</i>대본</button>
-    <button data-tool="style"><i>🎨</i>스타일</button><button data-tool="audio"><i>🎵</i>오디오</button>
+    <button data-tool="image"><i>🖼</i>이미지</button><button data-tool="style"><i>🎨</i>스타일</button><button data-tool="audio"><i>🎵</i>오디오</button>
   </div>`;
   $('#pname').textContent = p.name;
   backStack.push(closeEditor);
@@ -339,7 +340,7 @@ async function openEditor(id) {
   $('#seek').oninput = (e) => { pause(); E.t = e.target.value / 1000 * totalDuration(p); E.sel = sceneAt(p, E.t).i; markSel(); };
   app.querySelector('.tools').onclick = (e) => {
     const b = e.target.closest('[data-tool]'); if (!b) return;
-    ({ scene: sceneSheet, script: scriptSheet, style: styleSheet, audio: audioSheet })[b.dataset.tool]();
+    ({ scene: sceneSheet, script: scriptSheet, image: imageSheet, style: styleSheet, audio: audioSheet })[b.dataset.tool]();
   };
   $('#strip').onclick = (e) => {
     const b = e.target.closest('.sc'); if (!b) return;
@@ -455,12 +456,13 @@ function sceneSheet() {
     <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
     <label>자막 위치</label>${chips('textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], s.textPos)}
     <label>자막 효과</label>${chips('textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], s.textAnim)}
+    ${E.sel > 0 ? `<label>이 장면으로 넘어올 때</label>${chips('transition', [['', '기본'], ['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], s.transition || '')}` : ''}
     <label>화면 움직임</label>${chips('motion', [['zoomIn', '줌 인'], ['zoomOut', '줌 아웃'], ['panL', '← 이동'], ['panR', '이동 →'], ['none', '고정']], s.motion)}
     ${s.mediaId ? `<label>화면 맞춤</label>${chips('fit', [['cover', '꽉 채우기'], ['contain', '전체 보기(흐린 배경)']], s.fit)}` : `<label>배경색</label>${swatches('bg', BGS.map((c, i) => ({ v: i, css: `linear-gradient(135deg,${c[0]},${c[1]})` })), s.bg)}`}
     ${s.mediaKind === 'video' ? `<label>✂ 영상 시작 지점 <b id="tv">${(s.trimStart || 0).toFixed(1)}</b>초 (원본 ${vdur.toFixed(1)}초)</label><input type="range" id="tr" min="0" max="${Math.max(0, vdur - 0.5).toFixed(1)}" step="0.1" value="${s.trimStart || 0}">` : ''}
     ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
     <label>스티커 (미리보기에서 끌어서 옮기고, 눌러서 수정)</label><div class="chips">${(s.stickers || []).map((k) => `<button data-act="stk" data-id="${k.id}">${k.e}</button>`).join('')}<button data-act="addStk">＋ 추가</button></div>
-    <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}</div>
+    <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}<button data-act="prompt">📋 이미지 프롬프트</button></div>
     <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="split">나누기</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
   $('#tx', L.el).oninput = (e) => { s.text = e.target.value; if (!s.narration) dropTts(s); changed(); };
   $('#nr', L.el).oninput = (e) => { s.narration = e.target.value; dropTts(s); changed({ strip: false }); };
@@ -475,6 +477,7 @@ function sceneSheet() {
   };
   bindChips(L.el, (k, v) => {
     if (k === 'bg') s.bg = +v; else if (k === 'clipAudio') s.clipAudio = v === '1'; else s[k] = v;
+    if (k === 'transition') E.t = sceneStart(p, E.sel);
     changed({ audio: k === 'clipAudio' });
     if (k === 'textAnim' || k === 'motion') { E.t = sceneStart(p, E.sel); }
   });
@@ -486,6 +489,7 @@ function sceneSheet() {
   wire(L, {
     left: () => move(-1), right: () => move(1),
     addStk: () => { L.close(); stickerPicker(s); },
+    prompt: () => copyText(buildPrompt(p, E.sel), `장면 ${E.sel + 1} 프롬프트를 복사했어요`),
     stk: (b) => { L.close(); stickerEdit(s, s.stickers.find((k) => k.id === b.dataset.id)); },
     split: () => {
       // 재생 위치에서 장면을 둘로 나눈다 (영상 클립은 뒤쪽 조각이 이어서 재생됨)
@@ -505,7 +509,7 @@ function sceneSheet() {
         const m = await importFile(p, f); const a = await loadAsset(m.id); E.assets.set(m.id, a);
         s.mediaId = m.id; s.mediaKind = m.kind;
         if (m.kind === 'video') { s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)); s.motion = 'none'; }
-        changed({ audio: true }); L.close();
+        changed({ audio: true }); L.close(); maybeAutoFx();
       } catch { toast('파일을 불러오지 못했어요'); }
     },
   });
@@ -530,6 +534,176 @@ function stickerEdit(s, k) {
   bindChips(L.el, (key, v) => { k.anim = v; changed(); });
   wire(L, { del: () => { s.stickers = s.stickers.filter((x) => x !== k); changed(); L.close(); } });
 }
+/* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
+// 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
+async function copyText(text, msg = '복사했어요') {
+  let ok = false;
+  if (NATIVE && NATIVE.copy) { try { ok = NATIVE.copy(text); } catch {} }
+  if (!ok) { try { await navigator.clipboard.writeText(text); ok = true; } catch {} }
+  if (!ok) {
+    const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;opacity:0';
+    document.body.append(t); t.select();
+    try { ok = document.execCommand('copy'); } catch {}
+    t.remove();
+  }
+  toast(ok ? msg : '복사하지 못했어요. 글을 길게 눌러 직접 복사해 주세요');
+}
+// ChatGPT 등에 그대로 붙여넣을 주문서. 장면 설명이 없으면 자막으로 대신 설명한다.
+function buildPrompt(p, i) {
+  const s = p.scenes[i];
+  const what = (s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`;
+  return `세로형 숏폼 영상(인스타 릴스·유튜브 쇼츠)의 ${i + 1}번째 장면에 쓸 이미지를 1장 만들어 주세요.
+
+[그림 내용]
+${what}
+
+[조건]
+- 비율: 세로 9:16 (1080×1920)
+- 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
+- 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
+- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.`;
+}
+function buildAllPrompts(p) {
+  return `세로형 숏폼 영상에 쓸 장면 이미지 ${p.scenes.length}장을 순서대로 1장씩 만들어 주세요. 모든 장면은 같은 화풍으로 통일하고, 같은 인물·물건은 같은 생김새를 유지해 주세요.
+
+[공통 조건]
+- 비율: 세로 9:16 (1080×1920)
+- 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
+- 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
+- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.
+
+${p.scenes.map((s, i) => `[장면 ${i + 1}] ${(s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`}`).join('\n')}`;
+}
+function imageSheet() {
+  const E = cur, p = E.p;
+  if (!p.scenes.length) return toast('먼저 장면을 추가해 주세요');
+  pause();
+  const done = p.scenes.filter((s) => s.mediaId).length, noIdea = p.scenes.some((s) => !(s.imgPrompt || '').trim());
+  const L = sheet('🖼 장면별 이미지', `
+    <div class="mut">① 📋 복사 → ② ChatGPT 등 이미지 AI에 붙여넣기 → ③ 만든 그림을 저장 → ④ 🖼 넣기. 모든 장면에 이미지가 들어가면 장면별 효과가 자동으로 적용돼요.</div>
+    <label>공통 화풍 (모든 장면에 적용)</label><input type="text" id="lk" value="${esc(p.look || '')}" placeholder="예) 따뜻한 자연광의 실사 사진">
+    <div class="row" style="margin-top:10px"><button data-act="ai">🤖 ${noIdea ? 'AI 장면 설명' : '설명 다시 쓰기'}</button><button data-act="all">📋 전체 복사</button></div>
+    <div class="row" style="margin-top:8px"><button data-act="bulk">🖼 한꺼번에 넣기</button><button data-act="fx">✨ 효과 추천</button></div>
+    <div class="sec" style="margin-top:14px">이미지 ${done} / ${p.scenes.length}장</div>
+    ${p.scenes.map((s, i) => `<div class="imgc" data-i="${i}"><canvas width="90" height="160"></canvas><div class="b">
+      <b>장면 ${i + 1}</b><span class="mut">${esc(s.text || '(자막 없음)')}</span>
+      <textarea rows="3" data-p="${i}" placeholder="그림 설명 (비우면 자막으로 설명해요)">${esc(s.imgPrompt || '')}</textarea>
+      <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${s.mediaId ? '교체' : '넣기'}</button></div>
+    </div></div>`).join('')}`);
+  L.el.querySelectorAll('.imgc canvas').forEach((c) => thumb(c, p, p.scenes[+c.closest('.imgc').dataset.i], E.assets));
+  $('#lk', L.el).oninput = (e) => { p.look = e.target.value; changed({ strip: false }); };
+  L.el.querySelectorAll('textarea[data-p]').forEach((t) => { t.oninput = () => { p.scenes[+t.dataset.p].imgPrompt = t.value; changed({ strip: false }); }; });
+  const reopen = () => { L.close(); imageSheet(); };
+  let busy = false;
+  wire(L, {
+    copy: (b) => copyText(buildPrompt(p, +b.dataset.i), `장면 ${+b.dataset.i + 1} 프롬프트를 복사했어요`),
+    all: () => copyText(buildAllPrompts(p), `${p.scenes.length}개 장면 프롬프트를 한꺼번에 복사했어요`),
+    put: async (b) => {
+      const i = +b.dataset.i, [f] = await pickFiles('image/*,video/*'); if (!f) return;
+      if (await putMedia(p.scenes[i], f)) { reopen(); maybeAutoFx(); }
+    },
+    bulk: async () => {
+      const files = await pickFiles('image/*,video/*', true); if (!files.length) return;
+      // 이미지 AI에서 받은 순서(= 장면 순서)대로 넣도록 저장된 시각 순으로 정렬해, 이미지가 없는 장면부터 채운다
+      files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      let empty = p.scenes.filter((s) => !s.mediaId);
+      if (!empty.length) empty = p.scenes.slice(); // 다 차 있으면 처음부터 교체
+      toast('이미지를 넣는 중…');
+      let n = 0;
+      for (let k = 0; k < files.length && k < empty.length; k++) if (await putMedia(empty[k], files[k])) n++;
+      reopen();
+      toast(files.length > empty.length ? `${n}장을 넣었어요 (남는 ${files.length - empty.length}장은 뺐어요)` : `${n}장을 넣었어요`);
+      setTimeout(maybeAutoFx, 600);
+    },
+    fx: async () => { await autoFx(p, E.assets); changed({ audio: true }); E.t = 0; reopen(); toast('✨ 장면별 효과를 추천해 적용했어요'); },
+    ai: async (b) => {
+      if (busy) return;
+      if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(); }
+      busy = true; b.textContent = '작성 중…';
+      try {
+        const { generateImageIdeas } = await import('./ai.js');
+        const out = await generateImageIdeas({ title: p.name, scenes: p.scenes });
+        p.scenes.forEach((s, i) => { if (out.images[i]) s.imgPrompt = out.images[i]; });
+        if (out.look) p.look = out.look;
+        changed({ strip: false });
+        if (L.el.isConnected) reopen();
+        toast('장면 설명을 만들었어요');
+      } catch (e) { console.warn(e); toast(e.message || 'AI 요청에 실패했어요'); busy = false; b.textContent = '🤖 AI 장면 설명'; }
+    },
+  });
+}
+// 장면 하나에 파일을 넣는다 (사진은 움직임 유지, 영상은 길이를 영상에 맞춤)
+async function putMedia(s, f) {
+  const E = cur, p = E.p;
+  try {
+    const m = await importFile(p, f); const a = await loadAsset(m.id); E.assets.set(m.id, a);
+    s.mediaId = m.id; s.mediaKind = m.kind;
+    if (m.kind === 'video') { s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)); s.motion = 'none'; }
+    else if (s.motion === 'none') s.motion = 'zoomIn';
+    changed({ audio: true });
+    return true;
+  } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name}`); return false; }
+}
+
+/* ───────── 장면별 효과 자동 추천 ─────────
+   모든 장면에 이미지가 처음 다 들어갔을 때 한 번 자동 적용한다 (이후에는 ✨ 버튼으로 다시 적용).
+   그림의 밝기·가로세로 모양, 장면 위치(첫 장면 훅·마지막 행동 유도), 자막 내용, 영상 분위기를 보고 고른다. */
+function maybeAutoFx() {
+  const E = cur; if (!E) return;
+  const p = E.p;
+  if (p.autoFxDone || !p.scenes.length || p.scenes.some((s) => !s.mediaId)) return;
+  autoFx(p, E.assets).then(() => {
+    p.autoFxDone = true; changed({ audio: true }); E.t = 0;
+    toast('✨ 모든 장면에 이미지가 들어가서 장면별 효과를 자동으로 적용했어요');
+  });
+}
+function lookOf(a) {
+  // 작게 줄여 평균 밝기(0~1)와 채도를 잰다
+  try {
+    const c = document.createElement('canvas'); c.width = c.height = 16;
+    const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(a.src, 0, 0, 16, 16);
+    const d = g.getImageData(0, 0, 16, 16).data; let L = 0, S = 0;
+    for (let k = 0; k < d.length; k += 4) {
+      const mx = Math.max(d[k], d[k + 1], d[k + 2]), mn = Math.min(d[k], d[k + 1], d[k + 2]);
+      L += (0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2]) / 255; S += mx ? (mx - mn) / mx : 0;
+    }
+    return { lum: L / 256, sat: S / 256, wide: a.w / a.h > 0.75 };
+  } catch { return { lum: 0.5, sat: 0.5, wide: false }; }
+}
+async function autoFx(p, assets) {
+  const n = p.scenes.length, calm = /감성/.test(p.tone || '') || /감성|잔잔|따뜻|파스텔|빈티지|필름/.test(p.look || '');
+  const fun = /유머/.test(p.tone || '');
+  const info = p.scenes.map((s) => { const a = assets.get(s.mediaId); return a && a.kind === 'image' ? lookOf(a) : null; });
+  let pan = 0;
+  p.scenes.forEach((s, i) => {
+    const t = (s.text || '') + ' ' + (s.narration || ''), last = i === n - 1, first = i === 0;
+    const loud = /[!?！？]|충격|대박|꿀팁|비밀|진짜|절대|놓치|반전/.test(t);
+    const im = info[i], prev = info[i - 1];
+    // 화면 움직임: 영상은 그대로, 가로로 넓은 그림은 좌우 이동, 세로 그림은 줌 (첫 장면 줌 인, 마지막 줌 아웃)
+    if (s.mediaKind === 'image') {
+      if (first) s.motion = 'zoomIn';
+      else if (last) s.motion = 'zoomOut';
+      else if (im && im.wide) s.motion = pan++ % 2 ? 'panR' : 'panL';
+      else s.motion = loud ? 'zoomIn' : (i % 2 ? 'zoomOut' : 'zoomIn');
+    }
+    // 장면 전환: 감성은 페이드, 밝기 차이가 크면 페이드로 부드럽게, 강조 장면은 줌, 나머지는 슬라이드·페이드 교대
+    if (!first) {
+      const jump = im && prev ? Math.abs(im.lum - prev.lum) > 0.28 : false;
+      s.transition = last ? 'fade'
+        : calm || jump ? 'fade'
+        : loud || i === 1 ? 'zoom'
+        : i % 2 ? 'slide' : 'fade';
+    } else s.transition = '';
+    // 자막 효과: 훅·강조는 팝, 감성·어두운 그림은 페이드, 긴 문장은 타자기, 나머지는 슬라이드
+    const len = (s.text || '').replace(/\s/g, '').length;
+    s.textAnim = first || loud || fun ? 'pop'
+      : calm || (im && im.lum < 0.3) ? 'fade'
+      : len >= 14 && s.duration >= 3 ? 'type'
+      : last ? 'pop' : 'slide';
+  });
+  p.transition = calm ? 'fade' : p.transition;
+}
+
 // 자막 템플릿: 스타일·전환·자막 위치·효과를 한 번에 바꾼다
 const TEMPLATES = {
   basic: ['기본', { caption: 'outline', color: '#ffffff', size: 84, font: 'gothic' }, 'fade', 'bottom', 'pop'],
@@ -576,11 +750,11 @@ function styleSheet() {
   bindChips(L.el, (k, v) => {
     if (k === 'tpl') {
       const [, style, tr, pos, anim] = TEMPLATES[v];
-      Object.assign(st, style); p.transition = tr;
+      Object.assign(st, style); p.transition = tr; p.scenes.forEach((x) => { x.transition = ''; });
       p.scenes.forEach((s) => { s.textPos = pos; s.textAnim = anim; });
       changed(); L.close(); styleSheet(); return;
     }
-    if (k === 'transition') p.transition = v;
+    if (k === 'transition') { p.transition = v; p.scenes.forEach((x) => { x.transition = ''; }); }
     else if (k.startsWith('all.')) p.scenes.forEach((s) => { s[k.slice(4)] = v; });
     else st[k] = v;
     changed();
@@ -725,7 +899,7 @@ function exportSheet() {
     },
     share: () => L.share && L.share(),
     nsave: () => L.nsave && L.nsave(),
-    copy: () => navigator.clipboard.writeText($('#post', L.el).value).then(() => toast('복사했어요'), () => toast('복사하지 못했어요')),
+    copy: () => copyText($('#post', L.el).value, '설명글을 복사했어요'),
   });
 }
 
