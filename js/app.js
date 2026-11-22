@@ -263,7 +263,8 @@ async function aiSheet(create, preChar) {
   const prevOf = (id) => allProjects.filter((p) => p.char && p.char.id === id).sort((a, b) => a.createdAt - b.createdAt);
   const L = sheet('🤖 AI로 만들기', `
     ${chars.length ? `<label>진행 캐릭터</label>${chips('char', [['', '없음'], ...chars.map((c) => [c.id, esc(c.name)])], charId)}
-    <label id="srl" style="display:none"><input type="checkbox" id="sr" checked> <span id="srt"></span></label>` : ''}
+    <label id="srl" style="display:none"><input type="checkbox" id="sr" checked> <span id="srt"></span></label>
+    <label id="tkl" style="display:none"><input type="checkbox" id="tk" checked> 첫 장면과 마지막 장면은 캐릭터가 직접 말하기</label>` : ''}
     <label>어떤 영상을 만들까요?</label><textarea id="tp" rows="3" placeholder="예) 자취생을 위한 5분 계란 요리 3가지"></textarea>
     <label>분위기</label>${chips('tone', [['정보 전달', '정보'], ['유머러스', '유머'], ['감성적', '감성'], ['제품·가게 홍보', '홍보'], ['동기부여', '동기부여']], tone)}
     <label>길이</label>${chips('seconds', [[15, '15초'], [30, '30초'], [45, '45초'], [60, '60초']], seconds)}
@@ -272,6 +273,7 @@ async function aiSheet(create, preChar) {
     const box = $('#srl', L.el); if (!box) return;
     const n = charId ? prevOf(charId).length : 0;
     box.style.display = n ? '' : 'none';
+    const c = chars.find((x) => x.id === charId); $('#tkl', L.el).style.display = c && c.face ? '' : 'none';
     $('#srt', L.el).textContent = `이 캐릭터의 지난 영상 ${n}개에 이어지는 다음 편으로 만들기`;
   };
   series();
@@ -290,12 +292,15 @@ async function aiSheet(create, preChar) {
         const p = newProject((out.title || topic).slice(0, 30));
         p.post = { description: out.description || '', hashtags: out.hashtags || [] };
         p.look = out.look || ''; p.tone = tone;
-        if (ch) { p.char = charOf(ch); p.audio.ttsVoice = ch.voice; }
+        if (ch) {
+          p.char = charOf(ch); p.audio.ttsVoice = ch.voice;
+        }
         p.scenes = out.scenes.map((sc, i) => newScene({
           text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '', moveText: sc.motion || '',
           textPos: 'top',
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
+        if (ch && ch.face && $('#tk', L.el)?.checked) { p.scenes[0].talk = true; if (p.scenes.length > 2) p.scenes[p.scenes.length - 1].talk = true; }
         L.close(); create(p);
       } catch (e) { console.warn(e); toast(e.message || 'AI 요청에 실패했어요'); busy = false; btn.textContent = '대본 만들기'; }
     },
@@ -364,6 +369,7 @@ async function openEditor(id) {
   if (p.char && p.char.imageId) ids.add(p.char.imageId);
   await Promise.all([...ids].map(async (mid) => { try { const a = await loadAsset(mid); if (a) E.assets.set(mid, a); } catch (e) { console.warn(e); } }));
   if (cur !== E) return;
+  setupTalker(E);
   if (p.scenes.length) E.t = Math.min(0.8, p.scenes[0].duration * 0.5); // 첫 자막이 보이는 지점에서 시작
   renderStrip();
   const ctx = $('#cv').getContext('2d');
@@ -498,6 +504,7 @@ function sceneSheet() {
   pause();
   const vdur = s.mediaKind === 'video' ? (E.assets.get(s.mediaId)?.dur || 0) : 0;
   const L = sheet(`장면 ${E.sel + 1} 편집`, `
+    ${E.assets.talker ? `<label>장면 화면</label>${chips('talk', [['0', '🖼 그림·영상'], ['1', `🗣 ${esc(p.char.name)}가 말하기`]], s.talk ? '1' : '0')}` : ''}
     <label>큰 자막 (장면 제목)</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
     <label>대사 (화면 아래 대사 자막 · AI 음성이 읽음 · 비우면 자막을 읽음)</label><textarea id="nr" rows="2" placeholder="대본 문장 전체">${esc(s.narration || '')}</textarea>
     <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
@@ -522,7 +529,7 @@ function sceneSheet() {
     E.t = sceneStart(p, E.sel); changed({ audio: true });
   };
   bindChips(L.el, (k, v) => {
-    if (k === 'bg') s.bg = +v; else if (k === 'clipAudio') s.clipAudio = v === '1'; else s[k] = v;
+    if (k === 'bg') s.bg = +v; else if (k === 'clipAudio' || k === 'talk') s[k] = v === '1'; else s[k] = v;
     if (k === 'transition') E.t = sceneStart(p, E.sel);
     changed({ audio: k === 'clipAudio' });
     if (k === 'textAnim' || k === 'motion') { E.t = sceneStart(p, E.sel); }
@@ -644,7 +651,7 @@ async function charSheet(orig) {
   const c = orig ? { ...orig } : { id: uid(), name: '', look: '', persona: '', voice: 'Kore', imageId: null, createdAt: Date.now() };
   const { VOICES } = await import('./ai.js');
   const projects = orig ? (await db.all('projects')).filter((p) => p.char && p.char.id === c.id) : [];
-  let pendingImage = null; // 저장 전에 넣은 그림 (저장하지 않고 닫으면 버린다)
+  let pendingImage = null, pendingPhoto = null; // 저장 전에 넣은 그림 (저장하지 않고 닫으면 버린다)
   const L = sheet(orig ? `🧑 ${esc(c.name || '캐릭터')}` : '🧑 새 캐릭터', `
     <div class="charimg"><img id="ci" alt="" style="display:none"><span id="cn" class="mut">아직 전신 그림이 없어요</span></div>
     <label>어떤 캐릭터인가요? (짧게 적고 AI에게 맡기기)</label><input type="text" id="cc" placeholder="예) 공부 습관을 알려 주는 귀여운 새싹 화분">
@@ -660,13 +667,14 @@ async function charSheet(orig) {
   const read = () => { c.name = $('#cnm', L.el).value.trim(); c.look = $('#clk', L.el).value.trim(); c.persona = $('#cps', L.el).value.trim(); c.voice = $('#cvc', L.el).value; };
   const showImg = async (id) => { const u = await charImgUrl(id); if (u) { $('#ci', L.el).src = u; $('#ci', L.el).style.display = ''; $('#cn', L.el).style.display = 'none'; } };
   showImg(c.imageId);
-  L.onClose = () => { if (pendingImage) db.del('media', pendingImage); };
+  L.onClose = () => { if (pendingImage) db.del('media', pendingImage); if (pendingPhoto) db.del('media', pendingPhoto); };
   const save = async () => {
     read();
     if (!c.name) { toast('이름을 입력해 주세요'); return false; }
-    const old = orig && orig.imageId !== c.imageId ? orig.imageId : null;
-    c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null;
-    if (old && !(await db.all('projects')).some((p) => p.char && p.char.imageId === old)) db.del('media', old);
+    const old = orig && orig.imageId !== c.imageId ? [orig.imageId, orig.photoId].filter(Boolean) : [];
+    c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null; pendingPhoto = null;
+    const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId] : [])));
+    for (const id of old) if (!used.has(id)) db.del('media', id);
     Object.assign(orig || {}, c);
     return true;
   };
@@ -692,13 +700,19 @@ async function charSheet(orig) {
     copy: () => { read(); copyText(charPrompt(c), '전신 그림 프롬프트를 복사했어요'); },
     put: async () => {
       const [f] = await pickFiles('image/*'); if (!f) return;
-      toast('배경을 지우는 중…');
+      toast('배경을 지우고 얼굴을 찾는 중…');
       try {
         const { blob, removed } = await cutout(f);
         if (pendingImage) await db.del('media', pendingImage);
+        if (pendingPhoto) await db.del('media', pendingPhoto);
         const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'character.png' });
         pendingImage = id; c.imageId = id; showImg(id);
-        toast(removed ? '배경을 지웠어요. 저장을 눌러 주세요' : '배경이 단색이 아니라 그대로 넣었어요. 저장을 눌러 주세요');
+        // 말하는 사진용: 배경을 지우지 않은 원본(긴 변 1600px)과 얼굴 점
+        const photo = await shrinkPhoto(f), pid = uid();
+        await db.put('media', { id: pid, blob: photo, kind: 'image', name: 'character-photo.jpg' });
+        pendingPhoto = pid; c.photoId = pid;
+        c.face = await faceOfBlob(photo);
+        toast(`${removed ? '배경을 지웠어요' : '배경이 복잡해 그대로 넣었어요'}${c.face ? ' · 얼굴을 찾아 말하는 캐릭터로 쓸 수 있어요' : ' · 얼굴을 찾지 못해 말하기 기능은 못 써요'}. 저장을 눌러 주세요`);
       } catch (e) { console.warn(e); toast('그림을 불러오지 못했어요'); }
     },
     save: async () => { if (await save()) { L.close(); toast('캐릭터를 저장했어요'); homeChars(); } },
@@ -706,13 +720,42 @@ async function charSheet(orig) {
     del: async () => {
       if (!(await confirmDlg(`"${c.name}" 캐릭터를 삭제할까요? 이미 만든 영상에는 그대로 남아요.`, '삭제', '취소'))) return;
       await db.del('characters', c.id);
-      if (orig.imageId && !(await db.all('projects')).some((p) => p.char && p.char.imageId === orig.imageId)) db.del('media', orig.imageId);
+      const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId] : [])));
+      for (const id of [orig.imageId, orig.photoId]) if (id && !used.has(id)) db.del('media', id);
       L.close(); homeChars();
     },
   });
 }
 // 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
-const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: false, side: 'left', scale: 1 });
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
+// 말하는 사진 준비: 사진 줄이기, 얼굴 찾기, 편집기에 말하는 엔진 붙이기
+async function shrinkPhoto(file) {
+  const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
+  return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
+}
+async function faceOfBlob(blob) {
+  try { const { findFace } = await import('./talk.js'); const bmp = await createImageBitmap(blob); const pts = await findFace(bmp); bmp.close(); return pts; }
+  catch (e) { console.warn('얼굴 찾기 실패', e); return null; }
+}
+async function setupTalker(E) {
+  const c = E.p.char; E.assets.talker = null;
+  if (!c) return;
+  const srcId = c.photoId || c.imageId; if (!srcId) return;
+  try {
+    const rec = await db.get('media', srcId); if (!rec) return;
+    if (!c.face && !c.noFace) { // 예전 캐릭터: 처음 열 때 한 번 얼굴을 찾아 둔다
+      c.face = await faceOfBlob(rec.blob); if (!c.face) c.noFace = true;
+      const ch = await db.get('characters', c.id); if (ch && !ch.face && c.face) { ch.face = c.face; db.put('characters', ch); }
+      db.put('projects', E.p);
+    }
+    if (!c.face || cur !== E) return;
+    const { createTalker } = await import('./talk.js');
+    const bmp = await createImageBitmap(rec.blob);
+    E.assets.talker = { tk: createTalker(bmp, c.face), t: undefined };
+  } catch (e) { console.warn('말하는 캐릭터를 준비하지 못했어요', e); }
+}
 
 /* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
 // 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
@@ -816,7 +859,8 @@ function imageSheet() {
     <div class="row" style="margin-top:8px"><button data-act="bulk">🖼 그림 일괄</button><button data-act="bulkV">🎞 영상 일괄</button><button data-act="fx">✨ 효과 추천</button></div>
     <div class="sec" style="margin-top:14px">그림 ${done} / ${p.scenes.length} · 움직이는 영상 ${moving} / ${p.scenes.length}</div>
     ${p.scenes.map((s, i) => `<div class="imgc" data-i="${i}"><canvas width="90" height="160"></canvas><div class="b">
-      <b>장면 ${i + 1}${s.mediaKind === 'video' ? ' · 🎞 움직이는 영상' : ''}</b><span class="mut">${esc(s.text || '(자막 없음)')}</span>
+      <b>장면 ${i + 1}${s.talk ? ' · 🗣 캐릭터가 말하는 장면' : s.mediaKind === 'video' ? ' · 🎞 움직이는 영상' : ''}</b>
+      ${E.assets.talker ? `<div class="row"><button class="${s.talk ? 'pri' : ''}" data-act="talk" data-i="${i}">🗣 ${s.talk ? '말하는 장면 끄기' : `${esc(p.char.name)}가 직접 말하는 장면으로`}</button></div>` : ''}<span class="mut">${esc(s.text || '(자막 없음)')}</span>
       <textarea rows="3" data-p="${i}" placeholder="그림 설명 (비우면 자막으로 설명해요)">${esc(s.imgPrompt || '')}</textarea>
       <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button data-act="send" data-i="${i}">📤 보내기</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${stillOf(s) ? '교체' : '넣기'}</button></div>
       ${stillOf(s) ? `<textarea rows="2" data-m="${i}" placeholder="움직임 (비우면 자연스러운 몸짓으로)">${esc(s.moveText || '')}</textarea>
@@ -863,6 +907,7 @@ function imageSheet() {
       s.mediaId = s.stillId; s.mediaKind = 'image'; s.stillId = null; if (s.motion === 'none') s.motion = 'zoomIn';
       changed({ audio: true }); reopen();
     },
+    talk: (b) => { const s = p.scenes[+b.dataset.i]; s.talk = !s.talk; changed({ audio: false }); reopen(); setTimeout(maybeAutoFx, 300); },
     bulk: () => fill('image'),
     bulkV: () => fill('video'),
     fx: async () => { await autoFx(p, E.assets); changed({ audio: true }); E.t = 0; reopen(); toast('✨ 장면별 효과를 추천해 적용했어요'); },
@@ -908,7 +953,7 @@ async function putMedia(s, f) {
 function maybeAutoFx() {
   const E = cur; if (!E) return;
   const p = E.p;
-  if (p.autoFxDone || !p.scenes.length || p.scenes.some((s) => !s.mediaId)) return;
+  if (p.autoFxDone || !p.scenes.length || p.scenes.some((s) => !s.mediaId && !s.talk)) return;
   autoFx(p, E.assets).then(() => {
     p.autoFxDone = true; changed({ audio: true }); E.t = 0;
     toast('✨ 모든 장면에 이미지가 들어가서 장면별 효과를 자동으로 적용했어요');
@@ -1016,10 +1061,11 @@ async function styleSheet() {
   bindChips(L.el, async (k, v) => {
     if (k === 'char') {
       const x = chars.find((y) => y.id === v);
-      if (!v) p.char = null;
+      if (!v) { p.char = null; E.assets.talker = null; p.scenes.forEach((x) => { x.talk = false; }); }
       else if (x && (!c || c.id !== x.id)) {
         p.char = charOf(x);
         try { const a = await loadAsset(x.imageId); if (a) E.assets.set(x.imageId, a); } catch {}
+        await setupTalker(E);
       }
       changed({ audio: true }); L.close(); styleSheet(); return;
     }

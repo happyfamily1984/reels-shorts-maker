@@ -1,5 +1,6 @@
 // 렌더 엔진 — 프로젝트와 시각 t(초)를 받아 캔버스에 한 프레임을 그린다.
 // 미리보기와 내보내기가 같은 함수를 쓰므로 보이는 그대로 영상이 된다.
+import { poseAt } from './talk.js';
 import { TRACKS, renderTrack } from './music.js';
 
 export const W = 1080, H = 1920;
@@ -138,7 +139,8 @@ export function drawScene(ctx, p, s, local, assets, withText = true) {
   const prog = clamp(local / s.duration);
   const a = s.mediaId && assets.get(s.mediaId);
   let ok = false;
-  if (a) { try { ok = drawMedia(ctx, s, a, prog); } catch { ok = false; } }
+  if (s.talk && assets.talker && assets.talker.t !== undefined) { drawTalkScene(ctx, assets.talker.tk, prog); ok = true; }
+  else if (a) { try { ok = drawMedia(ctx, s, a, prog); } catch { ok = false; } }
   if (!ok) {
     const c = BGS[s.bg % BGS.length];
     const g = ctx.createLinearGradient(0, 0, W * (0.3 + 0.4 * prog), H);
@@ -157,17 +159,35 @@ function drawTexts(ctx, p, s, local, lower = 0) {
    저장된 캐릭터 그림을 화면 위쪽 구석의 작은 동그란 창에 넣는다 (전신 그림이든 얼굴 사진이든 위쪽 정사각형 = 얼굴 쪽을 쓴다).
    AI 음성의 크기에 맞춰 창이 살짝 커지고 테두리가 빛나 말하는 것처럼 보인다.
    talk: 1/30초마다의 음성 크기(0~1) — 믹싱할 때 assets.talk 에 만들어 둔다. */
-export const presenterOn = (p, assets) => !!(p.char && p.char.show && p.char.imageId && assets.get(p.char.imageId));
+export const presenterOn = (p, assets) => !!(p.char && p.char.show && p.char.imageId && (assets.talker || assets.get(p.char.imageId)));
+// 말하는 사진(assets.talker): 이 시각의 표정으로 한 번만 그려 두고 구석 창·말하는 장면이 같이 쓴다
+const ampAt = (assets, t) => { const a = assets.talk, k = Math.floor(t * 30); return a && k < a.length ? a[k] : 0; };
+function talkFrame(assets, t) {
+  const tk = assets.talker; if (!tk) return null;
+  if (tk.t !== t) { tk.t = t; tk.tk.render(poseAt(t, ampAt(assets, t))); }
+  return tk.tk;
+}
+// 장면 전체를 캐릭터가 말하는 화면으로: 얼굴이 화면 위쪽 2/5쯤 오게 확대해 채운다
+function drawTalkScene(ctx, tk, prog) {
+  const f = tk.face, z = 1 + 0.06 * prog;
+  const k = Math.max(W / tk.width, H / tk.height, (H * 0.3) / f.h) * z;
+  let x = W / 2 - f.x * k, y = H * 0.4 - f.y * k;
+  x = Math.min(0, Math.max(W - tk.width * k, x)); y = Math.min(0, Math.max(H - tk.height * k, y));
+  ctx.fillStyle = '#20202c'; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(tk.canvas, x, y, tk.width * k, tk.height * k);
+}
 export function drawPresenter(ctx, p, t, assets) {
   const c = p.char;
   if (!presenterOn(p, assets)) return;
-  const a = assets.get(c.imageId);
-  const talk = assets.talk, k = Math.floor(t * 30);
-  const amp = talk && k < talk.length ? talk[k] : 0;
+  const tk = talkFrame(assets, t), a = tk ? null : assets.get(c.imageId);
+  const amp = ampAt(assets, t);
   const d = 230 * (c.scale || 1), r = d / 2 * back(clamp(t / 0.5)) * (1 + amp * 0.05);
   const cx = c.side === 'right' ? W - 44 - d / 2 : 44 + d / 2, cy = 120 + d / 2 - amp * 6 * Math.abs(Math.sin(t * 9));
   if (r <= 1) return;
-  const side = Math.min(a.w, a.h), sx = (a.w - side) / 2; // 위쪽 정사각형
+  // 말하는 사진이면 얼굴을 가운데로, 아니면 그림 위쪽 정사각형
+  let sx, sy, side;
+  if (tk) { const f = tk.face; side = Math.min(tk.width, tk.height, f.h * 1.7); sx = Math.max(0, Math.min(tk.width - side, f.x - side / 2)); sy = Math.max(0, Math.min(tk.height - side, f.y - side * 0.48)); }
+  else { side = Math.min(a.w, a.h); sx = (a.w - side) / 2; sy = 0; }
   ctx.save();
   ctx.shadowColor = `rgba(255,255,255,${0.25 + amp * 0.6})`; ctx.shadowBlur = 18 + amp * 40;
   ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx, cy, r + 7, 0, Math.PI * 2); ctx.fill();
@@ -175,7 +195,7 @@ export function drawPresenter(ctx, p, t, assets) {
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
   const g = ctx.createLinearGradient(cx, cy - r, cx, cy + r); g.addColorStop(0, '#dfe7f5'); g.addColorStop(1, '#aebbd6');
   ctx.fillStyle = g; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
-  ctx.drawImage(a.src, sx, 0, side, side, cx - r, cy - r, r * 2, r * 2);
+  ctx.drawImage(tk ? tk.canvas : a.src, sx, sy, side, side, cx - r, cy - r, r * 2, r * 2);
   ctx.restore();
 }
 
@@ -186,7 +206,8 @@ export function drawFrame(ctx, p, t, assets) {
   if (!p.scenes.length) return;
   const { i, local } = sceneAt(p, t);
   const s = p.scenes[i], tr = s.transition || p.transition;
-  const ch = presenterOn(p, assets); // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
+  talkFrame(assets, t);
+  const ch = presenterOn(p, assets) && !s.talk; // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
   if (i > 0 && tr !== 'none' && local < TD) {
     const q = ease(local / TD), prev = p.scenes[i - 1];
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();

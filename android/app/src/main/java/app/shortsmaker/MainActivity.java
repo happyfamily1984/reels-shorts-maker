@@ -48,6 +48,7 @@ public class MainActivity extends Activity {
         MIME.put("js", "text/javascript"); MIME.put("mjs", "text/javascript");
         MIME.put("json", "application/json"); MIME.put("webmanifest", "application/manifest+json");
         MIME.put("svg", "image/svg+xml"); MIME.put("png", "image/png");
+        MIME.put("wasm", "application/wasm"); MIME.put("webp", "image/webp"); // 얼굴 찾기(MediaPipe) 엔진
     }
 
     private WebView web;
@@ -89,7 +90,8 @@ public class MainActivity extends Activity {
                 String mime = MIME.containsKey(ext) ? MIME.get(ext) : "application/octet-stream";
                 try {
                     InputStream in = getAssets().open(path);
-                    return new WebResourceResponse(mime, mime.startsWith("image/png") ? null : "utf-8", in);
+                    boolean text = mime.startsWith("text/") || mime.contains("json") || mime.contains("svg");
+                    return new WebResourceResponse(mime, text ? "utf-8" : null, in);
                 } catch (Exception e) {
                     return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found", new HashMap<>(), new java.io.ByteArrayInputStream(new byte[0]));
                 }

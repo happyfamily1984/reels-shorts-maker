@@ -19,7 +19,9 @@
    캐릭터는 장면 그림 안에 같은 생김새로 등장합니다 (📤 보내기 때 캐릭터 그림이 함께 넘어감).
    **🎬 모션**: 장면 그림을 넣은 뒤 🎬 움직이게 → 그림과 움직임 주문서가 Gemini·ChatGPT·Kling 등으로 함께 넘어가고,
    만든 영상을 🎞 영상 넣기로 넣으면 캐릭터가 실제로 움직이는 장면이 됩니다 (AI 음성 길이 유지, 짧으면 마지막 화면에서 멈춤).
-   스타일에서 켜면 화면 위쪽 구석에 작은 동그란 캐릭터 창이 뜨고, AI 음성에 맞춰 테두리가 빛납니다.
+   **🗣 말하는 캐릭터**(무료·기기 안에서): 캐릭터 사진에서 얼굴을 찾아(MediaPipe), AI 음성에 맞춰 입이 벌어지고
+   눈을 깜빡이고 고개가 움직입니다. 장면을 "캐릭터가 말하기"로 바꾸면 화면 가득 말하고, 나머지 장면에서는 위쪽 구석의
+   작은 동그란 창에서 말합니다. 얼굴이 정면으로 보이는 사진일수록 자연스럽습니다.
 4. **내보내기** → MP4 완성 → 인스타·유튜브로 바로 공유하거나 기기에 저장
 
 ## API 키 (선택 기능)
@@ -50,6 +52,7 @@ cd android && gradle assembleRelease      # → app/build/outputs/apk/release/ap
 | MediaRecorder | WebCodecs 미지원 브라우저용 대체 내보내기, 내레이션 녹음 |
 | Web Audio (OfflineAudioContext) | 배경음악·내레이션·클립 소리 믹싱 |
 | Gemini API (구조화 출력·TTS) | AI 대본·자막·해시태그 생성, 장면별 AI 음성 |
+| MediaPipe Face Landmarker + WebGL 그물 변형 | 사진 한 장으로 말하는 캐릭터 (얼굴 478점, 입·눈·고개 움직임) |
 | Web Audio 신시사이저 | 음원 파일 없이 내장 음악 5종을 즉석 생성 |
 | IndexedDB | 프로젝트·미디어를 기기에 저장 (자동 저장) |
 | Service Worker + Manifest | 설치형 PWA, 오프라인 실행 |
@@ -71,6 +74,10 @@ cd android && gradle assembleRelease      # → app/build/outputs/apk/release/ap
 - `js/music.js` — 내장 음악 생성
 - `js/db.js` — 저장소
 - `sw.js` — 오프라인 캐시 (배포 시 `VERSION` 올리기)
+
+## 사용한 오픈소스
+- MediaPipe Tasks Vision 0.10.21 (Apache-2.0) — `js/vendor/mediapipe/`
+- delaunator 5.0.1 (ISC) — `js/vendor/delaunator.mjs`
 
 ## 로컬 실행
 `python3 -m http.server` 후 `http://localhost:8000`
