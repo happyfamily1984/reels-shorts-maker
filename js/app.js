@@ -343,6 +343,7 @@ async function openEditor(id) {
     mig = true;
   }
   if (p.char && !p.char.v2) { p.char.v2 = true; p.char.show = false; mig = true; }
+  if (p.char && !p.char.v3) { p.char.v3 = true; p.char.side = 'left'; p.char.scale = 1; mig = true; }
   if (mig) db.put('projects', p);
   warmMix();
   // 미리보기 탭 = 재생/정지
@@ -711,7 +712,7 @@ async function charSheet(orig) {
   });
 }
 // 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
-const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: false, side: 'right', frame: 'half', scale: 1 });
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: false, side: 'left', scale: 1 });
 
 /* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
 // 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
@@ -753,7 +754,7 @@ ${IMG_RULES(p)}`;
 }
 function charNote(p) {
   const c = p.char; if (!c) return '';
-  if (c.show && c.imageId) return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요. 화면 ${c.side === 'left' ? '왼쪽' : '오른쪽'} 아래는 비워 두세요.`;
+  if (c.show && c.imageId) return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요. 화면 ${c.side === 'right' ? '오른쪽' : '왼쪽'} 위 구석은 비워 두세요.`;
   return `\n\n[등장 캐릭터] ${c.name}: ${c.look}\n캐릭터는 첨부한 캐릭터 그림과 똑같은 얼굴·머리·옷으로 그려 주세요.`;
 }
 function buildAllPrompts(p) {
@@ -1001,10 +1002,9 @@ async function styleSheet() {
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
     <label>캐릭터 진행자</label>${chips('char', [['', '없음'], ...chars.map((x) => [x.id, esc(x.name)]), ...(c && !chars.some((x) => x.id === c.id) ? [[c.id, esc(c.name)]] : [])], c ? c.id : '')}
-    ${c ? `<label>구석에 캐릭터 그림 합성 (배경이 지워진 그림일 때만 권장)</label>${chips('show', [['0', '끄기 — 장면 그림 안에 등장'], ['1', '켜기']], c.show ? '1' : '0')}
-    ${c.show ? `<label>보이는 범위</label>${chips('frame', [['full', '전신'], ['half', '상반신'], ['face', '얼굴']], c.frame || 'half')}
-    <label>위치</label>${chips('side', [['right', '오른쪽'], ['left', '왼쪽']], c.side || 'right')}
-    <label>캐릭터 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">` : ''}` : ''}
+    ${c ? `<label>구석에 작은 캐릭터 창 띄우기</label>${chips('show', [['0', '끄기 — 장면 그림 안에 등장'], ['1', '켜기']], c.show ? '1' : '0')}
+    ${c.show ? `<label>위치</label>${chips('side', [['left', '왼쪽 위'], ['right', '오른쪽 위']], c.side === 'right' ? 'right' : 'left')}
+    <label>캐릭터 창 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">` : ''}` : ''}
     <label>대사 자막 — 화면 아래에 대본 문장 전체를 작게 표시</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
@@ -1024,7 +1024,7 @@ async function styleSheet() {
       changed({ audio: true }); L.close(); styleSheet(); return;
     }
     if (k === 'show') { c.show = v === '1'; changed({ strip: false }); L.close(); styleSheet(); return; }
-    if (k === 'frame' || k === 'side') { c[k] = v; changed({ strip: false }); return; }
+    if (k === 'side') { c.side = v; changed({ strip: false }); return; }
     if (k === 'tpl') {
       const [, style, tr, pos, anim] = TEMPLATES[v];
       Object.assign(st, style); p.transition = tr; p.scenes.forEach((x) => { x.transition = ''; });

@@ -89,14 +89,14 @@ function drawSub(ctx, p, s, local) {
   return top;
 }
 
-function drawText(ctx, p, s, local, subTop = H) {
+function drawText(ctx, p, s, local, subTop = H, lower = 0) {
   if (!s.text) return;
   const st = p.style, size = st.size;
   ctx.font = `900 ${size}px ${FONTS[st.font] || FONTS.gothic}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const lines = wrap(ctx, s.text, W - 180);
   const lh = size * 1.32, bh = lines.length * lh;
-  const cy = s.textPos === 'top' ? 340 + bh / 2 : s.textPos === 'center' ? H / 2 : Math.min(H - 440, subTop - 50) - bh / 2;
+  const cy = s.textPos === 'top' ? Math.max(340, 130 + lower) + bh / 2 : s.textPos === 'center' ? H / 2 : Math.min(H - 440, subTop - 50) - bh / 2;
   const ap = local / 0.5;
   let alpha = 1, scale = 1, ty = 0, chars = Infinity;
   if (s.textAnim === 'fade') alpha = ease(ap);
@@ -147,43 +147,35 @@ export function drawScene(ctx, p, s, local, assets, withText = true) {
   }
   if (withText) drawTexts(ctx, p, s, local);
 }
-function drawTexts(ctx, p, s, local) {
+// lower: 위쪽 구석의 캐릭터 창과 겹치지 않게 위 자막을 내리는 양
+function drawTexts(ctx, p, s, local, lower = 0) {
   const top = drawSub(ctx, p, s, local);
-  drawText(ctx, p, s, local, top);
+  drawText(ctx, p, s, local, top, lower);
 }
 
 /* ───────── 캐릭터 진행자 ─────────
-   저장된 캐릭터(전신, 배경 지운 그림)를 화면 아래 구석에 세워 두고, AI 음성의 크기에 맞춰
-   들썩이고 흔들어 말하는 것처럼 보이게 한다. 보이는 범위: 전신·상반신·얼굴(그림 위쪽만 잘라 아래 가장자리에서 올라온 모습).
+   저장된 캐릭터 그림을 화면 위쪽 구석의 작은 동그란 창에 넣는다 (전신 그림이든 얼굴 사진이든 위쪽 정사각형 = 얼굴 쪽을 쓴다).
+   AI 음성의 크기에 맞춰 창이 살짝 커지고 테두리가 빛나 말하는 것처럼 보인다.
    talk: 1/30초마다의 음성 크기(0~1) — 믹싱할 때 assets.talk 에 만들어 둔다. */
-const CROP = { full: 1, half: 0.56, face: 0.34 };
+export const presenterOn = (p, assets) => !!(p.char && p.char.show && p.char.imageId && assets.get(p.char.imageId));
 export function drawPresenter(ctx, p, t, assets) {
   const c = p.char;
-  if (!c || !c.show || !c.imageId) return;
-  const a = assets.get(c.imageId); if (!a) return;
-  const crop = CROP[c.frame] || CROP.half; // 저장은 전신, 영상에서는 위쪽만 잘라 쓸 수 있다
-  const sw = a.w, sh = a.h * crop;
-  const h = H * ({ full: 0.46, half: 0.4, face: 0.28 }[c.frame] || 0.4) * (c.scale || 1);
-  const w = h * sw / sh;
+  if (!presenterOn(p, assets)) return;
+  const a = assets.get(c.imageId);
   const talk = assets.talk, k = Math.floor(t * 30);
   const amp = talk && k < talk.length ? talk[k] : 0;
-  const { local } = sceneAt(p, t);
-  // 처음 등장: 아래에서 톡 튀어 오른다 · 장면이 바뀔 때마다 살짝 뛴다
-  const enter = back(clamp(t / 0.7)), hop = local < 0.35 ? Math.sin(local / 0.35 * Math.PI) * 26 : 0;
-  const bob = -amp * 30 * Math.abs(Math.sin(t * 9)) - hop;
-  const sy = 1 + 0.012 * Math.sin(t * 2.2) + amp * 0.05 * Math.sin(t * 17);
-  const rot = 0.025 * Math.sin(t * 1.7) + amp * 0.045 * Math.sin(t * 6.3);
-  const left = c.side === 'left';
-  const cx = left ? w / 2 + 24 : W - w / 2 - 24;
-  const foot = c.frame === 'full' ? H - 70 : H + 6; // 전신은 발이 보이게, 나머지는 아래 가장자리에 걸친다
+  const d = 230 * (c.scale || 1), r = d / 2 * back(clamp(t / 0.5)) * (1 + amp * 0.05);
+  const cx = c.side === 'right' ? W - 44 - d / 2 : 44 + d / 2, cy = 120 + d / 2 - amp * 6 * Math.abs(Math.sin(t * 9));
+  if (r <= 1) return;
+  const side = Math.min(a.w, a.h), sx = (a.w - side) / 2; // 위쪽 정사각형
   ctx.save();
-  ctx.translate(cx, foot + (1 - enter) * (h + 100) + bob);
-  if (c.frame === 'full') { // 발밑 그림자
-    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.beginPath(); ctx.ellipse(0, -4 - bob, w * 0.32, 18, 0, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.rotate(rot); ctx.scale(1 / Math.sqrt(sy), sy);
-  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 24;
-  ctx.drawImage(a.src, 0, 0, sw, sh, -w / 2, -h, w, h);
+  ctx.shadowColor = `rgba(255,255,255,${0.25 + amp * 0.6})`; ctx.shadowBlur = 18 + amp * 40;
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx, cy, r + 7, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+  const g = ctx.createLinearGradient(cx, cy - r, cx, cy + r); g.addColorStop(0, '#dfe7f5'); g.addColorStop(1, '#aebbd6');
+  ctx.fillStyle = g; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+  ctx.drawImage(a.src, sx, 0, side, side, cx - r, cy - r, r * 2, r * 2);
   ctx.restore();
 }
 
@@ -194,7 +186,7 @@ export function drawFrame(ctx, p, t, assets) {
   if (!p.scenes.length) return;
   const { i, local } = sceneAt(p, t);
   const s = p.scenes[i], tr = s.transition || p.transition;
-  const ch = !!(p.char && p.char.show && assets.get(p.char.imageId)); // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
+  const ch = presenterOn(p, assets); // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
   if (i > 0 && tr !== 'none' && local < TD) {
     const q = ease(local / TD), prev = p.scenes[i - 1];
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
@@ -210,7 +202,7 @@ export function drawFrame(ctx, p, t, assets) {
     ctx.restore();
   } else drawScene(ctx, p, s, local, assets, !ch);
   // 캐릭터가 있으면 장면 그림 위·자막 아래에 그린다 (자막이 가려지지 않게)
-  if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local); }
+  if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local, 250 * (p.char.scale || 1)); }
 }
 
 // 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 영상이 장면보다 짧으면 마지막 화면에서 멈춤)
