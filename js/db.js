@@ -1,12 +1,11 @@
-// IndexedDB 래퍼 — 프로젝트와 미디어(사진·영상·오디오)를 기기 안에 저장한다.
+// IndexedDB 래퍼 — 프로젝트·미디어(사진·영상·오디오)·캐릭터를 기기 안에 저장한다.
 let dbp;
 function open() {
   if (!dbp) {
     dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('reels-maker', 1);
-      r.onupgradeneeded = () => {
-        r.result.createObjectStore('projects', { keyPath: 'id' });
-        r.result.createObjectStore('media', { keyPath: 'id' });
+      const r = indexedDB.open('reels-maker', 2);
+      r.onupgradeneeded = () => { // 1: 프로젝트·미디어, 2: 캐릭터 추가
+        for (const name of ['projects', 'media', 'characters']) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath: 'id' });
       };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);

@@ -107,9 +107,21 @@ ${IMAGE_RULES}
 
 사실 정보가 필요한 주제에서는 확실하지 않은 수치나 고유명사를 지어내지 말고 일반적인 표현을 씁니다.`;
 
-export async function generateScript({ topic, tone, seconds }) {
+// 캐릭터가 진행하는 영상: 말투·외형·지난 편을 대본 작가에게 알려 준다
+function charGuide(ch, prev) {
+  if (!ch) return '';
+  let g = `\n\n[진행 캐릭터]\n이 영상은 캐릭터 '${ch.name}'이(가) 화면 구석에 나와 시청자에게 직접 설명하는 형식입니다.
+- 성격·말투: ${ch.persona || '친근하고 밝은 말투'}
+- narration은 이 캐릭터가 말하는 대사입니다. 캐릭터의 말투로, 시청자에게 말을 거는 1인칭 구어체로 씁니다. 첫 장면에서 자연스럽게 자기 이름을 밝혀도 좋습니다.
+- 캐릭터는 영상 위에 따로 합성되므로 image에는 캐릭터를 그리지 말고, 장면 내용을 보여 주는 배경·소품·상황만 묘사합니다.
+- 캐릭터 외형(참고): ${ch.look || ''}`;
+  if (prev && prev.length) g += `\n\n[시리즈]\n이 캐릭터의 지난 영상들입니다. 이번 영상은 그다음 편입니다. 지난 내용을 반복하지 말고, 첫 장면이나 둘째 장면에서 지난 편을 한마디로 짧게 언급해 이어지는 느낌을 줍니다.\n${prev.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
+  return g;
+}
+
+export async function generateScript({ topic, tone, seconds, character, previous }) {
   const res = await callText({
-    input: `${GUIDE}\n\n주제: ${topic}\n분위기: ${tone}\n목표 길이: 약 ${seconds}초 (내레이션 총 ${Math.round(seconds * 6)}자 안팎, 장면 ${Math.max(3, Math.round(seconds / 4))}개 안팎)`,
+    input: `${GUIDE}${charGuide(character, previous)}\n\n주제: ${topic}\n분위기: ${tone}\n목표 길이: 약 ${seconds}초 (내레이션 총 ${Math.round(seconds * 6)}자 안팎, 장면 ${Math.max(3, Math.round(seconds / 4))}개 안팎)`,
     response_format: { type: 'text', mime_type: 'application/json', schema: SCHEMA },
   });
   const text = (typeof res.output_text === 'string' ? res.output_text : parts(res, 'text').map((p) => p.text).join('')).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
@@ -117,6 +129,26 @@ export async function generateScript({ topic, tone, seconds }) {
   try { out = JSON.parse(text); } catch { throw new Error('AI 응답을 읽지 못했어요. 다시 시도해 주세요.'); }
   if (!out.scenes?.length) throw new Error('대본이 비어 있어요. 다른 주제로 다시 시도해 주세요.');
   return out;
+}
+
+// 캐릭터 설정 만들기: 짧은 콘셉트 → 이름·외형(그림 주문용)·성격·말투
+const CHAR_SCHEMA = {
+  type: 'object', required: ['name', 'look', 'persona'],
+  properties: { name: { type: 'string' }, look: { type: 'string' }, persona: { type: 'string' } },
+};
+export async function generateCharacter(concept) {
+  const res = await callText({
+    input: `당신은 숏폼 영상용 캐릭터 디자이너입니다. 아래 콘셉트로 영상에 계속 등장할 진행자 캐릭터를 설정해 주세요. 한국어로 답하세요.
+
+- name: 부르기 쉬운 캐릭터 이름 (8자 이내). 콘셉트에 이름이 있으면 그대로 씁니다.
+- look: 이미지 생성 AI가 매번 똑같은 캐릭터를 그릴 수 있도록 하는 외형 설명. 화풍(3D·일러스트·실사 등), 몸 형태와 비율, 얼굴·눈·표정, 머리, 색상, 옷·소품, 특징을 구체적으로 3~5문장으로 씁니다.
+- persona: 영상에서 말할 때의 성격과 말투 1~2문장 (예: 밝고 다정한 반말, 문장 끝에 '~해요'를 자주 씀).
+
+콘셉트: ${concept}`,
+    response_format: { type: 'text', mime_type: 'application/json', schema: CHAR_SCHEMA },
+  });
+  const text = (typeof res.output_text === 'string' ? res.output_text : parts(res, 'text').map((p) => p.text).join('')).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  try { return JSON.parse(text); } catch { throw new Error('AI 응답을 읽지 못했어요. 다시 시도해 주세요.'); }
 }
 
 // 이미 있는 장면(대본으로 만들기·직접 입력)에 이미지 설명을 붙인다

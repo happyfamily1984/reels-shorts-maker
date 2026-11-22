@@ -1,5 +1,5 @@
 import * as db from './db.js';
-import { W, H, BGS, drawFrame, drawScene, syncVideos, mixAudio, totalDuration, sceneStart, sceneAt } from './render.js';
+import { W, H, BGS, drawFrame, drawScene, syncVideos, mixAudio, talkEnvelope, totalDuration, sceneStart, sceneAt } from './render.js';
 import { exportVideo } from './exporter.js';
 import { TRACKS } from './music.js';
 
@@ -164,10 +164,12 @@ async function showHome() {
       <p>대본이나 사진·영상을 넣으면 자막·전환·음악이 들어간 9:16 영상으로 만들어 드려요.</p>
       <div class="badge">${ICON.shield}모든 작업은 이 기기 안에서 처리</div>
     </div></div>
+    <div id="chars"></div>
     ${ps.length ? `<div class="sec">내 영상 ${ps.length}개</div>` + ps.map((p) => `<div class="proj" data-id="${p.id}"><canvas width="108" height="192"></canvas><div class="info"><b>${esc(p.name)}</b><span class="mut">장면 ${p.scenes.length}개 · ${fmt(totalDuration(p))} · ${new Date(p.updatedAt).toLocaleDateString('ko-KR')}</span></div><button class="ghost" data-menu>⋯</button></div>`).join('') : '<div class="empty"><div class="pod"><img src="icons/art.webp" alt=""></div><b>아직 만든 영상이 없어요.</b><span>아래 버튼으로 시작해 보세요.</span></div>'}
   </div>
   <button class="pri fab" id="new">＋ 새 영상 만들기</button>`;
   $('#new').onclick = newSheet;
+  homeChars();
   $('#set').onclick = () => settingsSheet();
   for (const el of app.querySelectorAll('.proj')) {
     const p = ps.find((x) => x.id === el.dataset.id);
@@ -252,27 +254,43 @@ function settingsSheet(done) {
     },
   });
 }
-function aiSheet(create) {
-  if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(() => aiSheet(create)); }
+async function aiSheet(create, preChar) {
+  if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(() => aiSheet(create, preChar)); }
   let tone = '정보 전달', seconds = 30, busy = false;
+  const chars = (await db.all('characters')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const allProjects = await db.all('projects');
+  let charId = preChar ? preChar.id : '';
+  const prevOf = (id) => allProjects.filter((p) => p.char && p.char.id === id).sort((a, b) => a.createdAt - b.createdAt);
   const L = sheet('🤖 AI로 만들기', `
+    ${chars.length ? `<label>진행 캐릭터</label>${chips('char', [['', '없음'], ...chars.map((c) => [c.id, esc(c.name)])], charId)}
+    <label id="srl" style="display:none"><input type="checkbox" id="sr" checked> <span id="srt"></span></label>` : ''}
     <label>어떤 영상을 만들까요?</label><textarea id="tp" rows="3" placeholder="예) 자취생을 위한 5분 계란 요리 3가지"></textarea>
     <label>분위기</label>${chips('tone', [['정보 전달', '정보'], ['유머러스', '유머'], ['감성적', '감성'], ['제품·가게 홍보', '홍보'], ['동기부여', '동기부여']], tone)}
     <label>길이</label>${chips('seconds', [[15, '15초'], [30, '30초'], [45, '45초'], [60, '60초']], seconds)}
     <div class="row" style="margin-top:14px"><button class="pri" data-act="ok">대본 만들기</button></div>`);
-  bindChips(L.el, (k, v) => { if (k === 'tone') tone = v; else seconds = +v; });
+  const series = () => {
+    const box = $('#srl', L.el); if (!box) return;
+    const n = charId ? prevOf(charId).length : 0;
+    box.style.display = n ? '' : 'none';
+    $('#srt', L.el).textContent = `이 캐릭터의 지난 영상 ${n}개에 이어지는 다음 편으로 만들기`;
+  };
+  series();
+  bindChips(L.el, (k, v) => { if (k === 'tone') tone = v; else if (k === 'char') { charId = v; series(); } else seconds = +v; });
   wire(L, {
     ok: async (btn) => {
       const topic = $('#tp', L.el).value.trim();
+      const ch = chars.find((c) => c.id === charId) || null;
+      const previous = ch && $('#sr', L.el)?.checked ? prevOf(ch.id).slice(-5).map((p) => `${p.name} — ${p.scenes.map((s) => s.text).filter(Boolean).slice(0, 4).join(' / ')}`) : [];
       if (!topic) return toast('주제를 입력해 주세요');
       if (busy) return; busy = true; btn.textContent = 'AI가 대본을 쓰는 중…';
       try {
         const { generateScript } = await import('./ai.js');
-        const out = await generateScript({ topic, tone, seconds });
+        const out = await generateScript({ topic, tone, seconds, character: ch, previous });
         if (!L.el.isConnected) return;
         const p = newProject((out.title || topic).slice(0, 30));
         p.post = { description: out.description || '', hashtags: out.hashtags || [] };
         p.look = out.look || ''; p.tone = tone;
+        if (ch) { p.char = charOf(ch); p.audio.ttsVoice = ch.voice; }
         p.scenes = out.scenes.map((sc, i) => newScene({
           text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '',
           textPos: 'top',
@@ -341,6 +359,7 @@ async function openEditor(id) {
     pause(); E.sel = i; E.t = sceneStart(p, i) + Math.min(0.8, p.scenes[i].duration * 0.5); markSel();
   };
   const ids = new Set(p.scenes.map((s) => s.mediaId).filter(Boolean));
+  if (p.char && p.char.imageId) ids.add(p.char.imageId);
   await Promise.all([...ids].map(async (mid) => { try { const a = await loadAsset(mid); if (a) E.assets.set(mid, a); } catch (e) { console.warn(e); } }));
   if (cur !== E) return;
   if (p.scenes.length) E.t = Math.min(0.8, p.scenes[0].duration * 0.5); // 첫 자막이 보이는 지점에서 시작
@@ -403,8 +422,13 @@ function getMix() {
   if (!E.mixDirty) return E.mixP || Promise.resolve(E.mix);
   E.mixDirty = false;
   const gen = E.mixGen = (E.mixGen || 0) + 1; // 믹싱 도중 또 바뀌면 늦게 끝난 옛 결과는 버린다
-  E.mixP = mixAudio(E.p, async (id) => (await db.get('media', id))?.blob)
-    .then((m) => { if (gen === E.mixGen) E.mix = m; return m; })
+  const blobOf = async (id) => (await db.get('media', id))?.blob;
+  E.mixP = mixAudio(E.p, blobOf)
+    .then(async (m) => {
+      const env = E.p.char ? await talkEnvelope(E.p, blobOf).catch(() => null) : null;
+      if (gen === E.mixGen) { E.mix = m; E.assets.talk = env; }
+      return m;
+    })
     .catch((e) => { console.warn(e); E.mixDirty = true; return null; })
     .finally(() => { if (gen === E.mixGen) E.mixP = null; });
   return E.mixP;
@@ -532,6 +556,160 @@ function sceneSheet() {
     },
   });
 }
+/* ───────── 캐릭터 ─────────
+   전신 그림을 저장해 두고 여러 영상에서 진행자로 쓴다. 그림은 ChatGPT·Gemini 등에서 만들어 넣고,
+   배경이 단색이면 기기에서 지운다(테두리에서 비슷한 색을 채워 나가며 투명하게). */
+async function cutout(file) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(bmp, 0, 0, w, h); bmp.close();
+  const img = g.getImageData(0, 0, w, h), d = img.data;
+  const border = [];
+  for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x);
+  for (let y = 0; y < h; y++) border.push(y * w, y * w + w - 1);
+  let removed = false;
+  const transparent = border.filter((i) => d[i * 4 + 3] < 200).length > border.length * 0.5;
+  if (!transparent) {
+    // 테두리 색의 중앙값을 배경색으로 보고, 테두리 대부분이 그 색이면 배경을 지운다
+    const med = (o) => border.map((i) => d[i * 4 + o]).sort((a, b) => a - b)[border.length >> 1];
+    const bg = [med(0), med(1), med(2)];
+    const dist = (i) => Math.abs(d[i * 4] - bg[0]) + Math.abs(d[i * 4 + 1] - bg[1]) + Math.abs(d[i * 4 + 2] - bg[2]);
+    if (border.filter((i) => dist(i) < 60).length > border.length * 0.7) {
+      const seen = new Uint8Array(w * h), q = [];
+      for (const i of border) if (dist(i) < 60) { seen[i] = 1; q.push(i); }
+      while (q.length) {
+        const i = q.pop(); d[i * 4 + 3] = 0;
+        const x = i % w, y = (i / w) | 0;
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1]) {
+          if (j >= 0 && !seen[j] && dist(j) < 60) { seen[j] = 1; q.push(j); }
+        }
+      }
+      // 가장자리를 부드럽게: 지운 곳과 맞닿은 픽셀은 배경색에 가까운 만큼 반투명
+      for (let i = 0; i < w * h; i++) {
+        if (!d[i * 4 + 3]) continue;
+        const x = i % w;
+        if ((x > 0 && !d[(i - 1) * 4 + 3]) || (x < w - 1 && !d[(i + 1) * 4 + 3]) || (i >= w && !d[(i - w) * 4 + 3]) || (i < w * (h - 1) && !d[(i + w) * 4 + 3])) {
+          d[i * 4 + 3] = Math.min(255, Math.round(255 * Math.min(1, dist(i) / 140)));
+        }
+      }
+      removed = true;
+    }
+  }
+  // 투명한 여백을 잘라 캐릭터에 딱 맞춘다
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 24) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) { x0 = 0; y0 = 0; x1 = w - 1; y1 = h - 1; }
+  g.putImageData(img, 0, 0);
+  const o = document.createElement('canvas'); o.width = x1 - x0 + 1; o.height = y1 - y0 + 1;
+  o.getContext('2d').drawImage(c, x0, y0, o.width, o.height, 0, 0, o.width, o.height);
+  const blob = await new Promise((r) => o.toBlob(r, 'image/png'));
+  return { blob, removed: removed || transparent };
+}
+function charPrompt(ch) {
+  return `영상에 계속 등장할 진행자 캐릭터의 전신 이미지를 1장 만들어 주세요.
+
+[캐릭터]
+- 이름: ${ch.name || '(이름 없음)'}
+- 외형: ${(ch.look || '').trim() || '(외형 설명을 적어 주세요)'}
+
+[조건]
+- 머리부터 발끝까지 전신이 모두 보이게, 정면을 보고 서 있는 자세 (팔은 몸 옆으로 자연스럽게)
+- 배경은 아무것도 없는 단색 흰색 (투명 배경 PNG로 만들 수 있으면 투명으로)
+- 바닥·그림자·글자·로고 없이 캐릭터만
+- 세로 이미지, 캐릭터가 화면 가운데에 크게`;
+}
+const charUrls = new Map(); // 캐릭터 그림 미리보기 주소 (다시 그릴 때 재사용)
+async function charImgUrl(imageId) {
+  if (!imageId) return '';
+  if (!charUrls.has(imageId)) { const r = await db.get('media', imageId); if (!r) return ''; charUrls.set(imageId, URL.createObjectURL(r.blob)); }
+  return charUrls.get(imageId);
+}
+async function homeChars() {
+  const cs = (await db.all('characters')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const box = $('#chars'); if (!box) return;
+  box.innerHTML = `<div class="sec">내 캐릭터 ${cs.length ? cs.length + '명' : ''}</div><div class="chars">${cs.map((c) => `<button class="char" data-id="${c.id}"><div class="ph"><img alt=""></div><b>${esc(c.name || '이름 없음')}</b></button>`).join('')}<button class="char add" data-new><div class="ph">＋</div><b>새 캐릭터</b></button></div>`;
+  box.querySelectorAll('.char[data-id]').forEach(async (b) => {
+    const c = cs.find((x) => x.id === b.dataset.id); b.onclick = () => charSheet(c);
+    const u = await charImgUrl(c.imageId); if (u) $('img', b).src = u; else $('.ph', b).textContent = '🧑';
+  });
+  $('[data-new]', box).onclick = () => charSheet(null);
+}
+async function charSheet(orig) {
+  const c = orig ? { ...orig } : { id: uid(), name: '', look: '', persona: '', voice: 'Kore', imageId: null, createdAt: Date.now() };
+  const { VOICES } = await import('./ai.js');
+  const projects = orig ? (await db.all('projects')).filter((p) => p.char && p.char.id === c.id) : [];
+  let pendingImage = null; // 저장 전에 넣은 그림 (저장하지 않고 닫으면 버린다)
+  const L = sheet(orig ? `🧑 ${esc(c.name || '캐릭터')}` : '🧑 새 캐릭터', `
+    <div class="charimg"><img id="ci" alt="" style="display:none"><span id="cn" class="mut">아직 전신 그림이 없어요</span></div>
+    <label>어떤 캐릭터인가요? (짧게 적고 AI에게 맡기기)</label><input type="text" id="cc" placeholder="예) 공부 습관을 알려 주는 귀여운 새싹 화분">
+    <div class="row" style="margin-top:8px"><button data-act="ai">🤖 AI로 캐릭터 설정 만들기</button></div>
+    <label>이름</label><input type="text" id="cnm" value="${esc(c.name)}" maxlength="20" placeholder="예) 새싹이">
+    <label>외형 (그림 주문에 그대로 들어가요 · 자세할수록 매번 같은 모습)</label><textarea id="clk" rows="4" placeholder="화풍, 몸 형태, 얼굴, 색, 옷·소품">${esc(c.look)}</textarea>
+    <label>성격·말투 (대본에 반영)</label><textarea id="cps" rows="2" placeholder="예) 밝고 다정한 존댓말">${esc(c.persona)}</textarea>
+    <label>목소리 (AI 음성)</label><select id="cvc">${VOICES.map((v) => `<option ${v === c.voice ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <label>전신 그림 — 보내기·복사로 이미지 AI에 주문한 뒤 받은 그림을 넣으세요 (단색 배경은 자동으로 지워요)</label>
+    <div class="row"><button data-act="send">📤 보내기</button><button data-act="copy">📋 복사</button><button class="pri" data-act="put">🖼 ${c.imageId ? '교체' : '넣기'}</button></div>
+    <div class="row" style="margin-top:16px"><button class="pri" data-act="save">저장</button>${orig ? '<button data-act="make">🎬 이 캐릭터로 영상</button>' : ''}</div>
+    ${orig ? `<div class="mut" style="margin-top:8px">이 캐릭터로 만든 영상 ${projects.length}개</div><div class="row" style="margin-top:8px"><button class="danger" data-act="del">캐릭터 삭제</button></div>` : ''}`);
+  const read = () => { c.name = $('#cnm', L.el).value.trim(); c.look = $('#clk', L.el).value.trim(); c.persona = $('#cps', L.el).value.trim(); c.voice = $('#cvc', L.el).value; };
+  const showImg = async (id) => { const u = await charImgUrl(id); if (u) { $('#ci', L.el).src = u; $('#ci', L.el).style.display = ''; $('#cn', L.el).style.display = 'none'; } };
+  showImg(c.imageId);
+  L.onClose = () => { if (pendingImage) db.del('media', pendingImage); };
+  const save = async () => {
+    read();
+    if (!c.name) { toast('이름을 입력해 주세요'); return false; }
+    const old = orig && orig.imageId !== c.imageId ? orig.imageId : null;
+    c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null;
+    if (old && !(await db.all('projects')).some((p) => p.char && p.char.imageId === old)) db.del('media', old);
+    Object.assign(orig || {}, c);
+    return true;
+  };
+  let busy = false;
+  wire(L, {
+    ai: async (b) => {
+      const concept = $('#cc', L.el).value.trim() || $('#cnm', L.el).value.trim();
+      if (!concept) return toast('어떤 캐릭터인지 짧게 적어 주세요');
+      if (!getKey()) { toast('먼저 Gemini API 키를 입력해 주세요'); return settingsSheet(); }
+      if (busy) return; busy = true; b.textContent = 'AI가 캐릭터를 만드는 중…';
+      try {
+        const { generateCharacter } = await import('./ai.js');
+        const out = await generateCharacter(concept);
+        if (!L.el.isConnected) return;
+        if (out.name) $('#cnm', L.el).value = out.name;
+        if (out.look) $('#clk', L.el).value = out.look;
+        if (out.persona) $('#cps', L.el).value = out.persona;
+        toast('설정을 채웠어요. 이제 📤 보내기로 전신 그림을 주문하세요');
+      } catch (e) { toast(e.message || 'AI 요청에 실패했어요'); }
+      busy = false; b.textContent = '🤖 AI로 캐릭터 설정 만들기';
+    },
+    send: () => { read(); sendText(charPrompt(c)); },
+    copy: () => { read(); copyText(charPrompt(c), '전신 그림 프롬프트를 복사했어요'); },
+    put: async () => {
+      const [f] = await pickFiles('image/*'); if (!f) return;
+      toast('배경을 지우는 중…');
+      try {
+        const { blob, removed } = await cutout(f);
+        if (pendingImage) await db.del('media', pendingImage);
+        const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'character.png' });
+        pendingImage = id; c.imageId = id; showImg(id);
+        toast(removed ? '배경을 지웠어요. 저장을 눌러 주세요' : '배경이 단색이 아니라 그대로 넣었어요. 저장을 눌러 주세요');
+      } catch (e) { console.warn(e); toast('그림을 불러오지 못했어요'); }
+    },
+    save: async () => { if (await save()) { L.close(); toast('캐릭터를 저장했어요'); homeChars(); } },
+    make: async () => { if (!(await save())) return; L.close(); homeChars(); aiSheet(async (p) => { await db.put('projects', p); openEditor(p.id); }, c); },
+    del: async () => {
+      if (!(await confirmDlg(`"${c.name}" 캐릭터를 삭제할까요? 이미 만든 영상에는 그대로 남아요.`, '삭제', '취소'))) return;
+      await db.del('characters', c.id);
+      if (orig.imageId && !(await db.all('projects')).some((p) => p.char && p.char.imageId === orig.imageId)) db.del('media', orig.imageId);
+      L.close(); homeChars();
+    },
+  });
+}
+// 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.imageId, side: 'right', frame: 'half', scale: 1 });
+
 /* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
 // 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
 async function copyText(text, msg = '복사했어요') {
@@ -568,7 +746,12 @@ ${what}
 - 비율: 세로 9:16 (1080×1920)
 - 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
 - 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
-- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.`;
+- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.${charNote(p)}`;
+}
+function charNote(p) {
+  const c = p.char; if (!c) return '';
+  if (c.show && c.imageId) return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요. 화면 ${c.side === 'left' ? '왼쪽' : '오른쪽'} 아래는 비워 두세요.`;
+  return `\n\n[등장 캐릭터] ${c.name}: ${c.look}\n캐릭터가 나오는 장면이면 첨부한 캐릭터 그림과 똑같은 생김새로 그려 주세요.`;
 }
 function buildAllPrompts(p) {
   return `세로형 숏폼 영상에 쓸 장면 이미지 ${p.scenes.length}장을 순서대로 1장씩 만들어 주세요. 모든 장면은 같은 화풍으로 통일하고, 같은 인물·물건은 같은 생김새를 유지해 주세요.
@@ -577,7 +760,7 @@ function buildAllPrompts(p) {
 - 비율: 세로 9:16 (1080×1920)
 - 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
 - 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
-- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.
+- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.${charNote(p)}
 
 ${p.scenes.map((s, i) => `[장면 ${i + 1}] ${(s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`}`).join('\n')}`;
 }
@@ -742,8 +925,10 @@ function scriptSheet() {
     },
   });
 }
-function styleSheet() {
+async function styleSheet() {
   const E = cur, p = E.p, st = p.style;
+  const chars = (await db.all('characters')).filter((c) => c.imageId);
+  const c = p.char;
   const colors = ['#ffffff', '#ffe600', '#00e5ff', '#ff5c8a', '#7dff7a', '#ff9d2e'].map((c) => ({ v: c, css: c }));
   const L = sheet('스타일', `
     <label>템플릿 — 누르면 전체 분위기가 한 번에 바뀝니다</label>${chips('tpl', Object.entries(TEMPLATES).map(([k, v]) => [k, v[0]]), '')}
@@ -751,13 +936,30 @@ function styleSheet() {
     <label>자막 색</label>${swatches('color', colors, st.color)}
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
+    <label>캐릭터 진행자</label>${chips('char', [['', '없음'], ...chars.map((x) => [x.id, esc(x.name)]), ...(c && !chars.some((x) => x.id === c.id) ? [[c.id, esc(c.name)]] : [])], c ? c.id : '')}
+    ${c ? `<label>보이는 범위</label>${chips('frame', [['full', '전신'], ['half', '상반신'], ['face', '얼굴']], c.frame || 'half')}
+    <label>위치</label>${chips('side', [['right', '오른쪽'], ['left', '왼쪽']], c.side || 'right')}
+    <label>캐릭터 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">
+    <label>화면에 보이기</label>${chips('show', [['1', '켜기'], ['0', '끄기 (그림 주문에만 반영)']], c.show ? '1' : '0')}` : ''}
     <label>대사 자막 — 화면 아래에 대본 문장 전체를 작게 표시</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
     <label>모든 장면에 일괄 적용 — 자막 효과</label>${chips('all.textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], '')}`);
   wire(L, {});
   $('#sz', L.el).oninput = (e) => { st.size = +e.target.value; $('#sv', L.el).textContent = st.size; changed(); };
-  bindChips(L.el, (k, v) => {
+  const csz = $('#csz', L.el);
+  if (csz) csz.oninput = () => { c.scale = +csz.value; $('#csv', L.el).textContent = Math.round(c.scale * 100); changed({ strip: false }); };
+  bindChips(L.el, async (k, v) => {
+    if (k === 'char') {
+      const x = chars.find((y) => y.id === v);
+      if (!v) p.char = null;
+      else if (x && (!c || c.id !== x.id)) {
+        p.char = charOf(x);
+        try { const a = await loadAsset(x.imageId); if (a) E.assets.set(x.imageId, a); } catch {}
+      }
+      changed({ audio: true }); L.close(); styleSheet(); return;
+    }
+    if (['frame', 'side', 'show'].includes(k)) { c[k] = k === 'show' ? v === '1' : v; changed({ strip: false }); return; }
     if (k === 'tpl') {
       const [, style, tr, pos, anim] = TEMPLATES[v];
       Object.assign(st, style); p.transition = tr; p.scenes.forEach((x) => { x.transition = ''; });

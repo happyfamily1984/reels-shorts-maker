@@ -134,7 +134,7 @@ function drawText(ctx, p, s, local, subTop = H) {
   ctx.restore();
 }
 
-export function drawScene(ctx, p, s, local, assets) {
+export function drawScene(ctx, p, s, local, assets, withText = true) {
   const prog = clamp(local / s.duration);
   const a = s.mediaId && assets.get(s.mediaId);
   let ok = false;
@@ -145,8 +145,46 @@ export function drawScene(ctx, p, s, local, assets) {
     g.addColorStop(0, c[0]); g.addColorStop(1, c[1]);
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
+  if (withText) drawTexts(ctx, p, s, local);
+}
+function drawTexts(ctx, p, s, local) {
   const top = drawSub(ctx, p, s, local);
   drawText(ctx, p, s, local, top);
+}
+
+/* ───────── 캐릭터 진행자 ─────────
+   저장된 캐릭터(전신, 배경 지운 그림)를 화면 아래 구석에 세워 두고, AI 음성의 크기에 맞춰
+   들썩이고 흔들어 말하는 것처럼 보이게 한다. 보이는 범위: 전신·상반신·얼굴(그림 위쪽만 잘라 아래 가장자리에서 올라온 모습).
+   talk: 1/30초마다의 음성 크기(0~1) — 믹싱할 때 assets.talk 에 만들어 둔다. */
+const CROP = { full: 1, half: 0.56, face: 0.34 };
+export function drawPresenter(ctx, p, t, assets) {
+  const c = p.char;
+  if (!c || !c.show || !c.imageId) return;
+  const a = assets.get(c.imageId); if (!a) return;
+  const crop = CROP[c.frame] || CROP.half; // 저장은 전신, 영상에서는 위쪽만 잘라 쓸 수 있다
+  const sw = a.w, sh = a.h * crop;
+  const h = H * ({ full: 0.46, half: 0.4, face: 0.28 }[c.frame] || 0.4) * (c.scale || 1);
+  const w = h * sw / sh;
+  const talk = assets.talk, k = Math.floor(t * 30);
+  const amp = talk && k < talk.length ? talk[k] : 0;
+  const { local } = sceneAt(p, t);
+  // 처음 등장: 아래에서 톡 튀어 오른다 · 장면이 바뀔 때마다 살짝 뛴다
+  const enter = back(clamp(t / 0.7)), hop = local < 0.35 ? Math.sin(local / 0.35 * Math.PI) * 26 : 0;
+  const bob = -amp * 30 * Math.abs(Math.sin(t * 9)) - hop;
+  const sy = 1 + 0.012 * Math.sin(t * 2.2) + amp * 0.05 * Math.sin(t * 17);
+  const rot = 0.025 * Math.sin(t * 1.7) + amp * 0.045 * Math.sin(t * 6.3);
+  const left = c.side === 'left';
+  const cx = left ? w / 2 + 24 : W - w / 2 - 24;
+  const foot = c.frame === 'full' ? H - 70 : H + 6; // 전신은 발이 보이게, 나머지는 아래 가장자리에 걸친다
+  ctx.save();
+  ctx.translate(cx, foot + (1 - enter) * (h + 100) + bob);
+  if (c.frame === 'full') { // 발밑 그림자
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.beginPath(); ctx.ellipse(0, -4 - bob, w * 0.32, 18, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.rotate(rot); ctx.scale(1 / Math.sqrt(sy), sy);
+  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 24;
+  ctx.drawImage(a.src, 0, 0, sw, sh, -w / 2, -h, w, h);
+  ctx.restore();
 }
 
 export function drawFrame(ctx, p, t, assets) {
@@ -155,21 +193,24 @@ export function drawFrame(ctx, p, t, assets) {
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   if (!p.scenes.length) return;
   const { i, local } = sceneAt(p, t);
-  const s = p.scenes[i], tr = s.transition || p.transition; // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
+  const s = p.scenes[i], tr = s.transition || p.transition;
+  const ch = !!(p.char && p.char.show && assets.get(p.char.imageId)); // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
   if (i > 0 && tr !== 'none' && local < TD) {
     const q = ease(local / TD), prev = p.scenes[i - 1];
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
     if (tr === 'slide') {
-      ctx.save(); ctx.translate(-q * W, 0); drawScene(ctx, p, prev, prev.duration, assets); ctx.restore();
-      ctx.save(); ctx.translate((1 - q) * W, 0); drawScene(ctx, p, s, local, assets); ctx.restore();
+      ctx.save(); ctx.translate(-q * W, 0); drawScene(ctx, p, prev, prev.duration, assets, !ch); ctx.restore();
+      ctx.save(); ctx.translate((1 - q) * W, 0); drawScene(ctx, p, s, local, assets, !ch); ctx.restore();
     } else {
-      drawScene(ctx, p, prev, prev.duration, assets);
+      drawScene(ctx, p, prev, prev.duration, assets, !ch);
       ctx.save(); ctx.globalAlpha = q;
       if (tr === 'zoom') { const k = 1.3 - 0.3 * q; ctx.translate(W / 2, H / 2); ctx.scale(k, k); ctx.translate(-W / 2, -H / 2); }
-      drawScene(ctx, p, s, local, assets); ctx.restore();
+      drawScene(ctx, p, s, local, assets, !ch); ctx.restore();
     }
     ctx.restore();
-  } else drawScene(ctx, p, s, local, assets);
+  } else drawScene(ctx, p, s, local, assets, !ch);
+  // 캐릭터가 있으면 장면 그림 위·자막 아래에 그린다 (자막이 가려지지 않게)
+  if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local); }
 }
 
 // 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 끝을 넘으면 반복)
@@ -212,6 +253,30 @@ export async function seekVideos(p, t, assets) {
 
 // 배경음악 + 내레이션 + 클립 소리를 하나의 오디오 버퍼로 섞는다
 const DECODED = new Map();
+export async function talkEnvelope(p, getBlob) {
+  const total = totalDuration(p), n = Math.ceil(total * 30) + 1, env = new Float32Array(n);
+  const ctx = new OfflineAudioContext(1, 1, 48000);
+  const decode = async (id) => {
+    if (DECODED.has(id)) return DECODED.get(id);
+    try { const b = await getBlob(id); const buf = b ? await ctx.decodeAudioData(await b.arrayBuffer()) : null; if (buf && buf.duration < 180) DECODED.set(id, buf); return buf; } catch { return null; }
+  };
+  const addBuf = (buf, at) => {
+    const d = buf.getChannelData(0), sr = buf.sampleRate, step = sr / 30;
+    for (let f = 0; f * step < d.length; f++) {
+      let sum = 0; const s0 = Math.floor(f * step), s1 = Math.min(d.length, Math.floor((f + 1) * step));
+      for (let i = s0; i < s1; i += 4) sum += d[i] * d[i];
+      const k = Math.floor(at * 30) + f; if (k < n) env[k] = Math.max(env[k], Math.sqrt(sum / Math.max(1, (s1 - s0) / 4)));
+    }
+  };
+  let any = false, t = 0;
+  if (p.audio.narrationId) { const b = await decode(p.audio.narrationId); if (b) { addBuf(b, 0); any = true; } }
+  for (const s of p.scenes) { if (s.ttsId) { const b = await decode(s.ttsId); if (b) { addBuf(b, t); any = true; } } t += s.duration; }
+  if (!any) return null;
+  const sorted = [...env].filter((v) => v > 0.005).sort((a, b) => a - b), ref = sorted[Math.floor(sorted.length * 0.9)] || 1;
+  let prev = 0;
+  for (let k = 0; k < n; k++) { const v = Math.min(1, env[k] / ref); prev = v > prev ? v : prev * 0.8 + v * 0.2; env[k] = v < 0.08 ? prev * 0.6 : prev; }
+  return env;
+}
 export async function mixAudio(p, getBlob) {
   const total = totalDuration(p), sr = 48000;
   if (total <= 0) return null;
