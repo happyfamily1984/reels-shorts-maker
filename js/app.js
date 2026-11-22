@@ -548,6 +548,15 @@ async function copyText(text, msg = '복사했어요') {
   }
   toast(ok ? msg : '복사하지 못했어요. 글을 길게 눌러 직접 복사해 주세요');
 }
+// 다른 앱으로 보내기: 클립보드에도 복사해 두고(받는 앱이 글을 못 받아도 붙여넣기 가능) 공유 창을 연다
+async function sendText(text) {
+  let ok = false;
+  if (NATIVE && NATIVE.copy) { try { ok = NATIVE.copy(text); } catch {} }
+  if (!ok) { try { await navigator.clipboard.writeText(text); } catch {} }
+  if (NATIVE && NATIVE.shareText) { NATIVE.shareText(text); return toast('ChatGPT·Gemini를 고르세요 (내용은 복사도 돼 있어요)'); }
+  if (navigator.share) { try { await navigator.share({ text }); } catch {} return; }
+  copyText(text, '이 브라우저는 보내기를 지원하지 않아 복사만 했어요');
+}
 // ChatGPT 등에 그대로 붙여넣을 주문서. 장면 설명이 없으면 자막으로 대신 설명한다.
 function buildPrompt(p, i) {
   const s = p.scenes[i];
@@ -580,15 +589,15 @@ function imageSheet() {
   pause();
   const done = p.scenes.filter((s) => s.mediaId).length, noIdea = p.scenes.some((s) => !(s.imgPrompt || '').trim());
   const L = sheet('🖼 장면별 이미지', `
-    <div class="mut">① 📋 복사 → ② ChatGPT 등 이미지 AI에 붙여넣기 → ③ 만든 그림을 저장 → ④ 🖼 넣기. 모든 장면에 이미지가 들어가면 장면별 효과가 자동으로 적용돼요.</div>
+    <div class="mut">① 📤 보내기(ChatGPT·Gemini 선택) 또는 📋 복사 → ② 이미지 AI에서 그림 만들기 → ③ 만든 그림을 저장 → ④ 🖼 넣기. 모든 장면에 이미지가 들어가면 장면별 효과가 자동으로 적용돼요.</div>
     <label>공통 화풍 (모든 장면에 적용)</label><input type="text" id="lk" value="${esc(p.look || '')}" placeholder="예) 따뜻한 자연광의 실사 사진">
-    <div class="row" style="margin-top:10px"><button data-act="ai">🤖 ${noIdea ? 'AI 장면 설명' : '설명 다시 쓰기'}</button><button data-act="all">📋 전체 복사</button></div>
+    <div class="row" style="margin-top:10px"><button data-act="ai">🤖 ${noIdea ? 'AI 장면 설명' : '설명 다시 쓰기'}</button><button data-act="all">📋 전체 복사</button><button data-act="allSend">📤 전체 보내기</button></div>
     <div class="row" style="margin-top:8px"><button data-act="bulk">🖼 한꺼번에 넣기</button><button data-act="fx">✨ 효과 추천</button></div>
     <div class="sec" style="margin-top:14px">이미지 ${done} / ${p.scenes.length}장</div>
     ${p.scenes.map((s, i) => `<div class="imgc" data-i="${i}"><canvas width="90" height="160"></canvas><div class="b">
       <b>장면 ${i + 1}</b><span class="mut">${esc(s.text || '(자막 없음)')}</span>
       <textarea rows="3" data-p="${i}" placeholder="그림 설명 (비우면 자막으로 설명해요)">${esc(s.imgPrompt || '')}</textarea>
-      <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${s.mediaId ? '교체' : '넣기'}</button></div>
+      <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button data-act="send" data-i="${i}">📤 보내기</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${s.mediaId ? '교체' : '넣기'}</button></div>
     </div></div>`).join('')}`);
   L.el.querySelectorAll('.imgc canvas').forEach((c) => thumb(c, p, p.scenes[+c.closest('.imgc').dataset.i], E.assets));
   $('#lk', L.el).oninput = (e) => { p.look = e.target.value; changed({ strip: false }); };
@@ -597,6 +606,8 @@ function imageSheet() {
   let busy = false;
   wire(L, {
     copy: (b) => copyText(buildPrompt(p, +b.dataset.i), `장면 ${+b.dataset.i + 1} 프롬프트를 복사했어요`),
+    send: (b) => sendText(buildPrompt(p, +b.dataset.i)),
+    allSend: () => sendText(buildAllPrompts(p)),
     all: () => copyText(buildAllPrompts(p), `${p.scenes.length}개 장면 프롬프트를 한꺼번에 복사했어요`),
     put: async (b) => {
       const i = +b.dataset.i, [f] = await pickFiles('image/*,video/*'); if (!f) return;

@@ -200,6 +200,17 @@ public class MainActivity extends Activity {
             } catch (Exception e) { return false; }
         }
 
+        // 글을 다른 앱(ChatGPT·Gemini 등)으로 보낸다 — 공유 창에서 앱을 고른다
+        @JavascriptInterface
+        public void shareText(String text) {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_SEND);
+                i.setType("text/plain");
+                i.putExtra(Intent.EXTRA_TEXT, text);
+                startActivity(Intent.createChooser(i, "프롬프트 보내기"));
+            });
+        }
+
         @JavascriptInterface
         public void exit() {
             runOnUiThread(MainActivity.this::finishAndRemoveTask);

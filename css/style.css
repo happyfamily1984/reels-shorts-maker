@@ -118,3 +118,4 @@ a.dl button { color:var(--fg); }
 .imgc .b > span { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .imgc textarea { font-size:13px; }
 .imgc .row { margin-top:0; }
+.imgc .row button, .sheet .row button[data-act=allSend], .sheet .row button[data-act=all], .sheet .row button[data-act=ai] { padding-left:4px; padding-right:4px; white-space:nowrap; font-size:14px; }
