@@ -67,14 +67,36 @@ function drawMedia(ctx, s, a, prog) {
   return true;
 }
 
-function drawText(ctx, p, s, local) {
+// 대사 자막: 내레이션(대본 문장 전체)을 화면 아래에 반투명 띠와 함께 작게 띄운다.
+// 그린 영역의 맨 위 y를 돌려줘서, 아래쪽 큰 자막이 그 위로 비켜 가게 한다.
+export const subOn = (p, s) => p.subtitle !== false && !!(s.narration || '').trim() && s.narration.trim() !== (s.text || '').trim();
+function drawSub(ctx, p, s, local) {
+  if (!subOn(p, s)) return H;
+  const size = 54, lh = size * 1.4;
+  ctx.save();
+  ctx.font = `700 ${size}px ${FONTS[p.style.font] || FONTS.gothic}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const lines = wrap(ctx, s.narration.trim(), W - 160).slice(0, 4);
+  const bottom = H - 230, top = bottom - lines.length * lh;
+  ctx.globalAlpha *= ease(clamp(local / 0.3));
+  lines.forEach((line, i) => {
+    const y = top + lh * (i + 0.5), w = ctx.measureText(line).width + size * 0.8;
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
+    ctx.beginPath(); ctx.roundRect(W / 2 - w / 2, y - lh / 2 + 2, w, lh - 4, 14); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(line, W / 2, y);
+  });
+  ctx.restore();
+  return top;
+}
+
+function drawText(ctx, p, s, local, subTop = H) {
   if (!s.text) return;
   const st = p.style, size = st.size;
   ctx.font = `900 ${size}px ${FONTS[st.font] || FONTS.gothic}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const lines = wrap(ctx, s.text, W - 180);
   const lh = size * 1.32, bh = lines.length * lh;
-  const cy = s.textPos === 'top' ? 340 + bh / 2 : s.textPos === 'center' ? H / 2 : H - 440 - bh / 2;
+  const cy = s.textPos === 'top' ? 340 + bh / 2 : s.textPos === 'center' ? H / 2 : Math.min(H - 440, subTop - 50) - bh / 2;
   const ap = local / 0.5;
   let alpha = 1, scale = 1, ty = 0, chars = Infinity;
   if (s.textAnim === 'fade') alpha = ease(ap);
@@ -112,22 +134,6 @@ function drawText(ctx, p, s, local) {
   ctx.restore();
 }
 
-// 이모지 스티커: 장면 시작에 톡 튀어나오고, 지정한 움직임을 반복한다
-function drawStickers(ctx, s, local) {
-  for (const k of s.stickers || []) {
-    let sc = back(local / 0.4), dy = 0, rot = 0;
-    if (k.anim === 'bounce') dy = -Math.abs(Math.sin(local * 4)) * k.size * 0.25;
-    else if (k.anim === 'pulse') sc *= 1 + 0.12 * Math.sin(local * 6);
-    else if (k.anim === 'wiggle') rot = Math.sin(local * 8) * 0.2;
-    else if (k.anim === 'spin') rot = local * 2;
-    ctx.save();
-    ctx.translate(k.x * W, k.y * H + dy); ctx.rotate(rot); ctx.scale(sc, sc);
-    ctx.font = `${k.size}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#fff'; ctx.fillText(k.e, 0, 0);
-    ctx.restore();
-  }
-}
-
 export function drawScene(ctx, p, s, local, assets) {
   const prog = clamp(local / s.duration);
   const a = s.mediaId && assets.get(s.mediaId);
@@ -139,8 +145,8 @@ export function drawScene(ctx, p, s, local, assets) {
     g.addColorStop(0, c[0]); g.addColorStop(1, c[1]);
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
-  drawStickers(ctx, s, local);
-  drawText(ctx, p, s, local);
+  const top = drawSub(ctx, p, s, local);
+  drawText(ctx, p, s, local, top);
 }
 
 export function drawFrame(ctx, p, t, assets) {
@@ -205,12 +211,19 @@ export async function seekVideos(p, t, assets) {
 }
 
 // 배경음악 + 내레이션 + 클립 소리를 하나의 오디오 버퍼로 섞는다
+const DECODED = new Map();
 export async function mixAudio(p, getBlob) {
   const total = totalDuration(p), sr = 48000;
   if (total <= 0) return null;
   const ctx = new OfflineAudioContext(2, Math.ceil(total * sr), sr);
+  // 한 번 풀어 둔 소리는 다시 풀지 않는다 (미디어 id는 바뀌지 않으므로 안전). 긴 소리는 메모리 때문에 담아 두지 않는다.
   const decode = async (id) => {
-    try { const b = await getBlob(id); return b ? await ctx.decodeAudioData(await b.arrayBuffer()) : null; } catch { return null; }
+    if (DECODED.has(id)) return DECODED.get(id);
+    try {
+      const b = await getBlob(id); const buf = b ? await ctx.decodeAudioData(await b.arrayBuffer()) : null;
+      if (buf && buf.duration < 180) { DECODED.set(id, buf); if (DECODED.size > 60) DECODED.delete(DECODED.keys().next().value); }
+      return buf;
+    } catch { return null; }
   };
   let any = false;
   const add = (buf, vol, when, dur, loop, offset = 0) => {

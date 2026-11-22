@@ -275,7 +275,7 @@ function aiSheet(create) {
         p.look = out.look || ''; p.tone = tone;
         p.scenes = out.scenes.map((sc, i) => newScene({
           text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '',
-          stickers: sc.emoji ? [{ id: uid(), e: sc.emoji, x: 0.5, y: 0.3, size: 280, anim: 'bounce' }] : [],
+          textPos: 'top',
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
         L.close(); create(p);
@@ -315,28 +315,19 @@ async function openEditor(id) {
   $('#back').onclick = goBack;
   $('#pname').onclick = () => renameSheet(p, () => { $('#pname').textContent = p.name; });
   $('#export').onclick = exportSheet;
-  $('#play').onclick = () => (E.playing ? pause() : play());
-  // 미리보기: 탭 = 재생/정지, 스티커를 끌면 이동, 스티커를 탭하면 편집
-  const cv = $('#cv'); let drag = null;
-  const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; };
-  cv.onpointerdown = (e) => {
-    const q = pos(e), s = p.scenes.length && p.scenes[sceneAt(p, E.t).i];
-    const k = !E.playing && s && [...(s.stickers || [])].reverse().find((k) => Math.hypot((q.x - k.x) * W, (q.y - k.y) * H) < k.size * 0.6);
-    drag = { k, s, q, moved: false };
-    if (k) cv.setPointerCapture(e.pointerId);
-  };
-  cv.onpointermove = (e) => {
-    if (!drag || !drag.k) return;
-    const q = pos(e);
-    if (!drag.moved && Math.hypot(q.x - drag.q.x, q.y - drag.q.y) < 0.015) return;
-    drag.moved = true;
-    drag.k.x = Math.min(0.95, Math.max(0.05, q.x)); drag.k.y = Math.min(0.95, Math.max(0.05, q.y));
-  };
-  cv.onpointerup = cv.onpointercancel = () => {
-    const d = drag; drag = null; if (!d) return;
-    if (!d.k) return E.playing ? pause() : play();
-    if (d.moved) changed(); else stickerEdit(d.s, d.k);
-  };
+  $('#play').onclick = togglePlay;
+  // 예전 프로젝트: 스티커 기능 삭제, 대사(내레이션)가 있으면 대사 자막을 아래에 켜고 큰 자막은 위로 올린다
+  let mig = false;
+  p.scenes.forEach((s) => { if (s.stickers) { delete s.stickers; mig = true; } });
+  if (p.subtitle === undefined) {
+    p.subtitle = p.scenes.some((s) => (s.narration || '').trim());
+    if (p.subtitle) p.scenes.forEach((s) => { if (s.textPos === 'bottom') s.textPos = 'top'; });
+    mig = true;
+  }
+  if (mig) db.put('projects', p);
+  warmMix();
+  // 미리보기 탭 = 재생/정지
+  $('#cv').onclick = togglePlay;
   $('#seek').oninput = (e) => { pause(); E.t = e.target.value / 1000 * totalDuration(p); E.sel = sceneAt(p, E.t).i; markSel(); };
   app.querySelector('.tools').onclick = (e) => {
     const b = e.target.closest('[data-tool]'); if (!b) return;
@@ -387,7 +378,7 @@ let saveTo;
 function changed({ audio = false, strip = true } = {}) {
   const E = cur; if (!E) return;
   E.p.updatedAt = Date.now();
-  if (audio) E.mixDirty = true;
+  if (audio) { E.mixDirty = true; warmMix(); }
   E.sel = Math.max(0, Math.min(E.sel, E.p.scenes.length - 1));
   E.t = Math.min(E.t, totalDuration(E.p));
   if (strip) renderStrip();
@@ -405,26 +396,56 @@ function markSel(scroll) {
   });
   const total = totalDuration(cur.p); $('#seek').value = total ? cur.t / total * 1000 : 0;
 }
-async function getMix() {
+// 소리 합치기(믹싱)는 몇 초 걸릴 수 있다. 한 번에 하나만 돌리고, 결과는 바뀌기 전까지 다시 쓴다.
+// 버튼을 여러 번 눌러도 믹싱이 겹치거나 소리가 여러 개 재생되지 않게 한다.
+function getMix() {
   const E = cur;
-  if (E.mixDirty) { E.mix = await mixAudio(E.p, async (id) => (await db.get('media', id))?.blob); E.mixDirty = false; }
-  return E.mix;
+  if (!E.mixDirty) return E.mixP || Promise.resolve(E.mix);
+  E.mixDirty = false;
+  const gen = E.mixGen = (E.mixGen || 0) + 1; // 믹싱 도중 또 바뀌면 늦게 끝난 옛 결과는 버린다
+  E.mixP = mixAudio(E.p, async (id) => (await db.get('media', id))?.blob)
+    .then((m) => { if (gen === E.mixGen) E.mix = m; return m; })
+    .catch((e) => { console.warn(e); E.mixDirty = true; return null; })
+    .finally(() => { if (gen === E.mixGen) E.mixP = null; });
+  return E.mixP;
+}
+// 편집이 멈추면 미리 믹싱해 둬서, 재생을 누르면 바로 소리가 나게 한다
+function warmMix() {
+  const E = cur; if (!E) return;
+  clearTimeout(E.warmTo);
+  E.warmTo = setTimeout(() => { if (cur === E && E.mixDirty && !E.playing) getMix(); }, 1200);
+}
+function togglePlay() {
+  const E = cur; if (!E) return;
+  // 소리 준비 중에 누르면 '재생 예약'을 켜고 끈다 → 마지막으로 누른 상태대로 된다
+  if (E.loading) { E.cancel = !E.cancel; $('#play').textContent = E.cancel ? '▶' : '⏳'; return; }
+  if (E.playing) pause(); else play();
 }
 async function play(silent) {
-  const E = cur; if (!E || E.playing || !E.p.scenes.length) return;
+  const E = cur; if (!E || E.playing || E.loading || !E.p.scenes.length) return;
   if (E.t >= totalDuration(E.p) - 0.05) E.t = 0;
+  stopNode(E);
   if (!silent) {
     E.actx = E.actx || new AudioContext(); E.actx.resume();
+    if (E.mixDirty || E.mixP) {
+      E.loading = true; $('#play').textContent = '⏳';
+      toast('소리를 준비하는 중…');
+    }
     const mix = await getMix();
     if (cur !== E) return;
+    const cancelled = E.cancel; E.loading = false; E.cancel = false;
+    if (cancelled) { $('#play').textContent = '▶'; return; }
+    stopNode(E);
     if (mix) { E.node = E.actx.createBufferSource(); E.node.buffer = mix; E.node.connect(E.actx.destination); E.node.start(0, E.t); }
   }
   E.t0 = performance.now() - E.t * 1000; E.playing = true; $('#play').textContent = '⏸';
 }
+function stopNode(E) { if (E.node) { try { E.node.stop(); } catch {} E.node.disconnect(); E.node = null; } }
 function pause() {
   const E = cur; if (!E) return;
+  if (E.loading) E.cancel = true; // 준비 중에 다시 누르면 재생 취소
   E.playing = false;
-  if (E.node) { try { E.node.stop(); } catch {} E.node = null; }
+  stopNode(E);
   const b = $('#play'); if (b) b.textContent = '▶';
 }
 
@@ -451,8 +472,8 @@ function sceneSheet() {
   pause();
   const vdur = s.mediaKind === 'video' ? (E.assets.get(s.mediaId)?.dur || 0) : 0;
   const L = sheet(`장면 ${E.sel + 1} 편집`, `
-    <label>자막</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
-    <label>읽을 문장 (AI 음성용 · 비우면 자막을 읽음)</label><input type="text" id="nr" value="${esc(s.narration || '')}" placeholder="자막과 다르게 읽고 싶을 때만 입력">
+    <label>큰 자막 (장면 제목)</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
+    <label>대사 (화면 아래 대사 자막 · AI 음성이 읽음 · 비우면 자막을 읽음)</label><textarea id="nr" rows="2" placeholder="대본 문장 전체">${esc(s.narration || '')}</textarea>
     <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
     <label>자막 위치</label>${chips('textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], s.textPos)}
     <label>자막 효과</label>${chips('textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], s.textAnim)}
@@ -461,7 +482,6 @@ function sceneSheet() {
     ${s.mediaId ? `<label>화면 맞춤</label>${chips('fit', [['cover', '꽉 채우기'], ['contain', '전체 보기(흐린 배경)']], s.fit)}` : `<label>배경색</label>${swatches('bg', BGS.map((c, i) => ({ v: i, css: `linear-gradient(135deg,${c[0]},${c[1]})` })), s.bg)}`}
     ${s.mediaKind === 'video' ? `<label>✂ 영상 시작 지점 <b id="tv">${(s.trimStart || 0).toFixed(1)}</b>초 (원본 ${vdur.toFixed(1)}초)</label><input type="range" id="tr" min="0" max="${Math.max(0, vdur - 0.5).toFixed(1)}" step="0.1" value="${s.trimStart || 0}">` : ''}
     ${s.mediaKind === 'video' ? `<label>영상 원본 소리</label>${chips('clipAudio', [['1', '켜기'], ['0', '끄기']], s.clipAudio ? '1' : '0')}` : ''}
-    <label>스티커 (미리보기에서 끌어서 옮기고, 눌러서 수정)</label><div class="chips">${(s.stickers || []).map((k) => `<button data-act="stk" data-id="${k.id}">${k.e}</button>`).join('')}<button data-act="addStk">＋ 추가</button></div>
     <label>미디어</label><div class="row"><button data-act="media">${s.mediaId ? '교체' : '사진·영상 넣기'}</button>${s.mediaId ? '<button data-act="rm">제거</button>' : ''}<button data-act="prompt">📋 이미지 프롬프트</button></div>
     <label>장면</label><div class="row"><button data-act="left">◀ 앞으로</button><button data-act="right">뒤로 ▶</button><button data-act="split">나누기</button><button data-act="dup">복제</button><button class="danger" data-act="del">삭제</button></div>`);
   $('#tx', L.el).oninput = (e) => { s.text = e.target.value; if (!s.narration) dropTts(s); changed(); };
@@ -488,9 +508,7 @@ function sceneSheet() {
   };
   wire(L, {
     left: () => move(-1), right: () => move(1),
-    addStk: () => { L.close(); stickerPicker(s); },
     prompt: () => copyText(buildPrompt(p, E.sel), `장면 ${E.sel + 1} 프롬프트를 복사했어요`),
-    stk: (b) => { L.close(); stickerEdit(s, s.stickers.find((k) => k.id === b.dataset.id)); },
     split: () => {
       // 재생 위치에서 장면을 둘로 나눈다 (영상 클립은 뒤쪽 조각이 이어서 재생됨)
       const at = Math.round((E.t - sceneStart(p, E.sel)) * 2) / 2;
@@ -513,26 +531,6 @@ function sceneSheet() {
       } catch { toast('파일을 불러오지 못했어요'); }
     },
   });
-}
-const EMOJIS = '🔥 ✨ ❤️ 😍 😂 🤣 😱 🤔 👍 👏 🙌 💯 ⭐ 🎉 💡 📌 ✅ ❌ ⚠️ 👉 👇 👆 💰 🛒 🎁 🍽️ ☕ 🍰 ✈️ 🏠 🐶 🐱 💪 🏃 🎵 📷 💬 ❓ ❗ 🆕 🔔 🌸 🌈 ☀️ 🌙 💤 😎 🥳 😭 🙏'.split(' ');
-function stickerPicker(s) {
-  const L = sheet('스티커 고르기', `<div class="chips emo">${EMOJIS.map((e) => `<button data-act="pick" data-e="${e}">${e}</button>`).join('')}</div>`);
-  wire(L, {
-    pick: (b) => {
-      (s.stickers = s.stickers || []).push({ id: uid(), e: b.dataset.e, x: 0.5, y: 0.32, size: 240, anim: 'bounce' });
-      changed(); L.close(); toast('미리보기에서 스티커를 끌어 옮길 수 있어요');
-    },
-  });
-}
-function stickerEdit(s, k) {
-  if (!k) return;
-  const L = sheet(`스티커 ${k.e}`, `
-    <label>크기</label><input type="range" id="ss" min="100" max="600" step="10" value="${k.size}">
-    <label>움직임</label>${chips('anim', [['bounce', '통통'], ['pulse', '두근'], ['wiggle', '흔들'], ['spin', '회전'], ['none', '고정']], k.anim)}
-    <div class="row" style="margin-top:14px"><button class="danger" data-act="del">스티커 삭제</button></div>`);
-  $('#ss', L.el).oninput = (e) => { k.size = +e.target.value; changed(); };
-  bindChips(L.el, (key, v) => { k.anim = v; changed(); });
-  wire(L, { del: () => { s.stickers = s.stickers.filter((x) => x !== k); changed(); L.close(); } });
 }
 /* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
 // 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
@@ -753,6 +751,7 @@ function styleSheet() {
     <label>자막 색</label>${swatches('color', colors, st.color)}
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
+    <label>대사 자막 — 화면 아래에 대본 문장 전체를 작게 표시</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
     <label>모든 장면에 일괄 적용 — 자막 효과</label>${chips('all.textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], '')}`);
@@ -765,7 +764,8 @@ function styleSheet() {
       p.scenes.forEach((s) => { s.textPos = pos; s.textAnim = anim; });
       changed(); L.close(); styleSheet(); return;
     }
-    if (k === 'transition') { p.transition = v; p.scenes.forEach((x) => { x.transition = ''; }); }
+    if (k === 'subtitle') p.subtitle = v === '1';
+    else if (k === 'transition') { p.transition = v; p.scenes.forEach((x) => { x.transition = ''; }); }
     else if (k.startsWith('all.')) p.scenes.forEach((s) => { s[k.slice(4)] = v; });
     else st[k] = v;
     changed();

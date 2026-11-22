@@ -81,8 +81,8 @@ const SCHEMA = {
     scenes: {
       type: 'array',
       items: {
-        type: 'object', required: ['caption', 'narration', 'emoji', 'image'],
-        properties: { caption: { type: 'string' }, narration: { type: 'string' }, emoji: { type: 'string' }, image: { type: 'string' } },
+        type: 'object', required: ['caption', 'narration', 'image'],
+        properties: { caption: { type: 'string' }, narration: { type: 'string' }, image: { type: 'string' } },
       },
     },
     description: { type: 'string' },
@@ -98,9 +98,8 @@ const GUIDE = `당신은 인스타그램 릴스·유튜브 쇼츠 전문 대본 
 영상은 장면 단위로 구성되고, 각 장면은 화면 자막 한 덩어리와 내레이션 한 문장으로 이루어집니다. 시청자는 소리를 끈 채 보는 경우가 많으므로 자막만 읽어도 내용이 전달되어야 합니다.
 
 - 첫 장면은 스크롤을 멈추게 하는 훅입니다. 마지막 장면은 저장·팔로우·댓글 같은 행동 유도로 끝냅니다.
-- caption: 화면에 크게 뜨는 자막. 한눈에 읽히도록 22자 이내의 짧은 구어체로 씁니다.
-- narration: 그 장면에서 읽을 내레이션 한 문장. 음성 합성으로 읽히므로 자연스러운 말투로, 이모지·특수기호 없이 씁니다. 한국어 내레이션은 1초에 약 6자 속도입니다.
-- emoji: 장면 분위기에 맞는 이모지 딱 1개.
+- caption: 화면 위쪽에 크게 뜨는 장면 제목. 그 장면의 핵심을 한눈에 읽히도록 22자 이내로 씁니다.
+- narration: 그 장면에서 읽을 내레이션 한 문장. 화면 아래쪽에 대사 자막으로도 그대로 표시됩니다. 음성 합성으로 읽히므로 자연스러운 말투로, 이모지·특수기호 없이 씁니다. 한국어 내레이션은 1초에 약 6자 속도입니다.
 ${IMAGE_RULES}
 - title: 프로젝트 이름으로 쓸 20자 이내 제목.
 - description: 업로드할 때 붙일 설명글 2~3문장.
