@@ -128,3 +128,7 @@ a.dl button { color:var(--fg); }
 .char.add .ph { border:1.5px dashed var(--line2); background:none; color:var(--mut); }
 .charimg { height:220px; border-radius:18px; display:flex; align-items:center; justify-content:center; background:repeating-conic-gradient(#20203a 0 25%, #191930 0 50%) 0 0/22px 22px; margin-bottom:4px; }
 .charimg img { max-height:100%; max-width:100%; object-fit:contain; }
+.posgrid { display:grid; grid-template-columns:repeat(3, 46px); grid-template-rows:repeat(3, 46px); gap:10px; justify-content:center; padding:12px; margin:4px auto 0; width:max-content; border-radius:18px; background:#0b0b16; border:1px solid var(--line2); }
+.posgrid button { width:46px; height:46px; padding:0; border-radius:50%; background:#20203a; border:2px solid var(--line2); }
+.posgrid button.on { background:var(--grad); border-color:#fff; box-shadow:0 0 12px #8b7bff; }
+.posgrid span { display:flex; align-items:center; justify-content:center; font-size:22px; opacity:.6; }

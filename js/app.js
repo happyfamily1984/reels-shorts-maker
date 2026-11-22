@@ -1,5 +1,5 @@
 import * as db from './db.js';
-import { W, H, BGS, drawFrame, drawScene, syncVideos, mixAudio, talkEnvelope, totalDuration, sceneStart, sceneAt } from './render.js';
+import { W, H, BGS, CAP_Y, SUB_Y, charPos, drawFrame, drawScene, syncVideos, mixAudio, talkEnvelope, totalDuration, sceneStart, sceneAt } from './render.js';
 import { exportVideo } from './exporter.js';
 import { TRACKS } from './music.js';
 
@@ -132,9 +132,29 @@ async function importFile(p, file) {
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
   return { id: await storeMedia(p, blob, 'image', file.name), kind: 'image' };
 }
+// 그림 아래쪽에 자막용으로 비워 둔 단색 띠가 있으면 그 높이를 돌려준다 (가로줄마다 색이 고르고 서로 비슷한 구간)
+function bottomBand(bmp) {
+  try {
+    const w = 48, h = Math.max(8, Math.round(bmp.height / bmp.width * w));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(bmp, 0, 0, w, h);
+    const d = g.getImageData(0, 0, w, h).data;
+    const row = (y) => { let r = 0, gg = 0, bb = 0; for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; r += d[i]; gg += d[i + 1]; bb += d[i + 2]; } return [r / w, gg / w, bb / w]; };
+    const flat = (y, m) => { for (let x = 0; x < w; x += 2) { const i = (y * w + x) * 4; if (Math.abs(d[i] - m[0]) + Math.abs(d[i + 1] - m[1]) + Math.abs(d[i + 2] - m[2]) > 30) return false; } return true; };
+    const base = row(h - 2); let y = h - 1;
+    while (y > h * 0.4) { const m = row(y); if (!flat(y, m) || Math.abs(m[0] - base[0]) + Math.abs(m[1] - base[1]) + Math.abs(m[2] - base[2]) > 24) break; y--; }
+    const band = h - 1 - y;
+    return band > h * 0.08 ? Math.floor(band / h * bmp.height) - 2 : 0;
+  } catch { return 0; }
+}
 async function loadAsset(id) {
   const rec = await db.get('media', id); if (!rec) return null;
-  if (rec.kind === 'image') { const b = await createImageBitmap(rec.blob); return { kind: 'image', src: b, w: b.width, h: b.height }; }
+  if (rec.kind === 'image') {
+    let b = await createImageBitmap(rec.blob);
+    const cut = bottomBand(b);
+    if (cut) { const c2 = await createImageBitmap(b, 0, 0, b.width, b.height - cut); b.close(); b = c2; }
+    return { kind: 'image', src: b, w: b.width, h: b.height };
+  }
   if (rec.kind === 'video') {
     const v = document.createElement('video');
     v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = URL.createObjectURL(rec.blob);
@@ -785,7 +805,7 @@ const sceneWhat = (s) => (s.imgPrompt || '').trim() || `"${(s.narration || s.tex
 const IMG_RULES = (p) => `- 비율: 세로 9:16 (1080×1920). 그림이 화면 전체를 꽉 채우게 (위아래 빈 여백·단색 띠 없이)
 - 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
 - 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
-- 아래쪽 1/4에는 자막이 올라가니 얼굴·중요한 물건은 그보다 위에 두세요.${charNote(p)}`;
+- 자막은 영상에서 따로 겹쳐 넣으니, 자막용 빈 공간·여백·단색 띠는 만들지 마세요.${charNote(p)}`;
 function buildPrompt(p, i) {
   return `세로형 숏폼 영상(인스타 릴스·유튜브 쇼츠)의 ${i + 1}번째 장면에 쓸 이미지를 1장 만들어 주세요.
 
@@ -797,7 +817,10 @@ ${IMG_RULES(p)}`;
 }
 function charNote(p) {
   const c = p.char; if (!c) return '';
-  if (c.show && c.imageId) return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요. 화면 ${c.side === 'right' ? '오른쪽' : '왼쪽'} 위 구석은 비워 두세요.`;
+  if (c.show && c.imageId) {
+    const where = { tl: '왼쪽 위', tc: '가운데 위', tr: '오른쪽 위', ml: '왼쪽 가운데', mr: '오른쪽 가운데', bl: '왼쪽 아래', bc: '가운데 아래', br: '오른쪽 아래' }[charPos(c)];
+    return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요.\n- 화면 ${where} 구석(화면 폭의 약 1/4 크기 동그라미 자리)에는 설명 캐릭터 창이 올라갑니다. 그 자리에는 얼굴·글자·중요한 물건을 두지 말고 하늘·벽·바닥 같은 단순한 배경이 자연스럽게 이어지게 해 주세요 (빈칸·테두리로 만들지 말 것).`;
+  }
   return `\n\n[등장 캐릭터] ${c.name}: ${c.look}\n캐릭터는 첨부한 캐릭터 그림과 똑같은 얼굴·머리·옷으로 그려 주세요.`;
 }
 function buildAllPrompts(p) {
@@ -1045,17 +1068,31 @@ async function styleSheet() {
     <label>자막 스타일</label>${chips('caption', [['outline', '테두리'], ['box', '박스'], ['highlight', '형광펜'], ['neon', '네온'], ['shadow', '그림자']], st.caption)}
     <label>자막 색</label>${swatches('color', colors, st.color)}
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
-    <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
+    <div class="sec" style="margin-top:16px">위 자막 (장면 제목)</div>
+    <label>크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
+    <label>높이 — 왼쪽: 위로 · 오른쪽: 아래로</label><input type="range" id="cy" min="0.04" max="0.5" step="0.01" value="${st.capY ?? CAP_Y}">
+    <div class="sec" style="margin-top:16px">아래 자막 (대사)</div>
+    <label>보이기</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
+    <label>크기 <b id="ssv">${st.subSize || 54}</b></label><input type="range" id="ssz" min="34" max="96" step="2" value="${st.subSize || 54}">
+    <label>높이 — 왼쪽: 위로 · 오른쪽: 아래로</label><input type="range" id="sy" min="0.55" max="0.97" step="0.01" value="${st.subY ?? SUB_Y}">
     <label>캐릭터 진행자</label>${chips('char', [['', '없음'], ...chars.map((x) => [x.id, esc(x.name)]), ...(c && !chars.some((x) => x.id === c.id) ? [[c.id, esc(c.name)]] : [])], c ? c.id : '')}
     ${c ? `<label>구석에 작은 캐릭터 창 띄우기</label>${chips('show', [['0', '끄기 — 장면 그림 안에 등장'], ['1', '켜기']], c.show ? '1' : '0')}
-    ${c.show ? `<label>위치</label>${chips('side', [['left', '왼쪽 위'], ['right', '오른쪽 위']], c.side === 'right' ? 'right' : 'left')}
+    ${c.show ? `<label>위치 — 원을 눌러 고르세요</label><div class="posgrid">${['tl', 'tc', 'tr', 'ml', '', 'mr', 'bl', 'bc', 'br'].map((k) => (k ? `<button data-pos="${k}" class="${charPos(c) === k ? 'on' : ''}" aria-label="${k}"></button>` : '<span>🎬</span>')).join('')}</div>
     <label>캐릭터 창 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">` : ''}` : ''}
-    <label>대사 자막 — 화면 아래에 대본 문장 전체를 작게 표시</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
     <label>모든 장면에 일괄 적용 — 자막 효과</label>${chips('all.textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], '')}`);
   wire(L, {});
   $('#sz', L.el).oninput = (e) => { st.size = +e.target.value; $('#sv', L.el).textContent = st.size; changed(); };
+  // 위치·크기는 움직이는 동안 미리보기에 바로 보이게, 해당 자막이 보이는 장면 시점으로 맞춘다
+  const showText = () => { E.t = sceneStart(p, E.sel) + Math.min(1, p.scenes[E.sel]?.duration / 2 || 0); };
+  $('#cy', L.el).oninput = (e) => { st.capY = +e.target.value; showText(); changed({ strip: false }); };
+  $('#ssz', L.el).oninput = (e) => { st.subSize = +e.target.value; $('#ssv', L.el).textContent = st.subSize; showText(); changed({ strip: false }); };
+  $('#sy', L.el).oninput = (e) => { st.subY = +e.target.value; showText(); changed({ strip: false }); };
+  L.el.querySelectorAll('.posgrid button').forEach((b) => b.onclick = () => {
+    c.pos = b.dataset.pos; L.el.querySelectorAll('.posgrid button').forEach((x) => x.classList.toggle('on', x === b));
+    showText(); changed({ strip: false });
+  });
   const csz = $('#csz', L.el);
   if (csz) csz.oninput = () => { c.scale = +csz.value; $('#csv', L.el).textContent = Math.round(c.scale * 100); changed({ strip: false }); };
   bindChips(L.el, async (k, v) => {
@@ -1070,7 +1107,6 @@ async function styleSheet() {
       changed({ audio: true }); L.close(); styleSheet(); return;
     }
     if (k === 'show') { c.show = v === '1'; changed({ strip: false }); L.close(); styleSheet(); return; }
-    if (k === 'side') { c.side = v; changed({ strip: false }); return; }
     if (k === 'tpl') {
       const [, style, tr, pos, anim] = TEMPLATES[v];
       Object.assign(st, style); p.transition = tr; p.scenes.forEach((x) => { x.transition = ''; });

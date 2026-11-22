@@ -71,14 +71,18 @@ function drawMedia(ctx, s, a, prog) {
 // 대사 자막: 내레이션(대본 문장 전체)을 화면 아래에 반투명 띠와 함께 작게 띄운다.
 // 그린 영역의 맨 위 y를 돌려줘서, 아래쪽 큰 자막이 그 위로 비켜 가게 한다.
 export const subOn = (p, s) => p.subtitle !== false && !!(s.narration || '').trim() && s.narration.trim() !== (s.text || '').trim();
+// 자막 위치 (스타일에서 조절): 위 자막의 윗선, 아래 대사 자막의 아랫선 — 화면 높이 대비 비율
+export const CAP_Y = 0.177, SUB_Y = 0.88;
+const capTop = (p) => (p.style.capY ?? CAP_Y) * H;
+const subBottom = (p) => (p.style.subY ?? SUB_Y) * H;
 function drawSub(ctx, p, s, local) {
   if (!subOn(p, s)) return H;
-  const size = 54, lh = size * 1.4;
+  const size = p.style.subSize || 54, lh = size * 1.4;
   ctx.save();
   ctx.font = `700 ${size}px ${FONTS[p.style.font] || FONTS.gothic}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const lines = wrap(ctx, s.narration.trim(), W - 160).slice(0, 4);
-  const bottom = H - 230, top = bottom - lines.length * lh;
+  const bottom = subBottom(p), top = bottom - lines.length * lh;
   ctx.globalAlpha *= ease(clamp(local / 0.3));
   lines.forEach((line, i) => {
     const y = top + lh * (i + 0.5), w = ctx.measureText(line).width + size * 0.8;
@@ -97,7 +101,7 @@ function drawText(ctx, p, s, local, subTop = H, lower = 0) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const lines = wrap(ctx, s.text, W - 180);
   const lh = size * 1.32, bh = lines.length * lh;
-  const cy = s.textPos === 'top' ? Math.max(340, 130 + lower) + bh / 2 : s.textPos === 'center' ? H / 2 : Math.min(H - 440, subTop - 50) - bh / 2;
+  const cy = s.textPos === 'top' ? Math.max(capTop(p), lower) + bh / 2 : s.textPos === 'center' ? H / 2 : Math.min(H - 440, subTop - 50) - bh / 2;
   const ap = local / 0.5;
   let alpha = 1, scale = 1, ty = 0, chars = Infinity;
   if (s.textAnim === 'fade') alpha = ease(ap);
@@ -176,13 +180,22 @@ function drawTalkScene(ctx, tk, prog) {
   ctx.fillStyle = '#20202c'; ctx.fillRect(0, 0, W, H);
   ctx.drawImage(tk.canvas, x, y, tk.width * k, tk.height * k);
 }
+// 캐릭터 창 위치: tl·tc·tr / ml·mr / bl·bc·br (위·가운데·아래 × 왼쪽·가운데·오른쪽)
+export const charPos = (c) => c.pos || (c.side === 'right' ? 'tr' : 'tl');
+export const presenterSize = (c) => 230 * (c.scale || 1);
+export function presenterXY(p) {
+  const c = p.char, pos = charPos(c), d = presenterSize(c);
+  const x = pos[1] === 'l' ? 44 + d / 2 : pos[1] === 'r' ? W - 44 - d / 2 : W / 2;
+  const y = pos[0] === 't' ? 120 + d / 2 : pos[0] === 'm' ? H * 0.46 : subBottom(p) - 220 - d / 2;
+  return { x, y, d };
+}
 export function drawPresenter(ctx, p, t, assets) {
   const c = p.char;
   if (!presenterOn(p, assets)) return;
   const tk = talkFrame(assets, t), a = tk ? null : assets.get(c.imageId);
   const amp = ampAt(assets, t);
   const d = 230 * (c.scale || 1), r = d / 2 * back(clamp(t / 0.5)) * (1 + amp * 0.05);
-  const cx = c.side === 'right' ? W - 44 - d / 2 : 44 + d / 2, cy = 120 + d / 2 - amp * 6 * Math.abs(Math.sin(t * 9));
+  const { x: cx, y: cy0 } = presenterXY(p), cy = cy0 - amp * 6 * Math.abs(Math.sin(t * 9));
   if (r <= 1) return;
   // 말하는 사진이면 얼굴을 가운데로, 아니면 그림 위쪽 정사각형
   let sx, sy, side;
@@ -223,7 +236,8 @@ export function drawFrame(ctx, p, t, assets) {
     ctx.restore();
   } else drawScene(ctx, p, s, local, assets, !ch);
   // 캐릭터가 있으면 장면 그림 위·자막 아래에 그린다 (자막이 가려지지 않게)
-  if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local, 250 * (p.char.scale || 1)); }
+  // 캐릭터 창이 위쪽에 있으면 위 자막을 그 아래로 내린다
+  if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local, charPos(p.char)[0] === 't' ? 140 + presenterSize(p.char) : 0); }
 }
 
 // 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 영상이 장면보다 짧으면 마지막 화면에서 멈춤)
