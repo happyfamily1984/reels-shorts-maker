@@ -93,8 +93,28 @@ function bindChips(root, fn) {
 function pickFiles(accept, multiple) {
   return new Promise((res) => {
     const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.multiple = !!multiple;
-    i.onchange = () => res([...i.files]); i.click();
+    i.onchange = async () => res(await Promise.all([...i.files].map(inMemory))); i.click();
   });
+}
+// 휴대폰 갤러리·다운로드 앱이 넘겨준 파일은 한 번밖에 못 읽는 경우가 있어, 그림은 고르자마자 메모리로 복사해 둔다
+async function inMemory(f) {
+  const isImg = /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|bmp|heic|heif|avif)$/i.test(f.name);
+  if (!isImg || f.size > 60 * 1048576) return f;
+  try { return new File([await f.arrayBuffer()], f.name, { type: f.type || 'image/jpeg', lastModified: f.lastModified }); }
+  catch (e) { console.warn('파일 복사 실패', e); return f; }
+}
+// 그림 열기: createImageBitmap이 못 읽으면 <img>로 한 번 더 시도. 둘 다 안 되면 형식을 알려 준다
+async function decodeImage(file) {
+  try { return await createImageBitmap(file); } catch (e1) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image(); img.src = url; await img.decode();
+      return await createImageBitmap(img);
+    } catch (e2) {
+      const kind = (file.type || file.name.split('.').pop() || '알 수 없음').replace('image/', '').toUpperCase();
+      throw new Error(/HEI[CF]/.test(kind) ? `${kind} 사진은 읽을 수 없어요. 갤러리에서 JPG로 저장하거나 화면을 캡처해 넣어 주세요` : `그림을 읽지 못했어요 (${kind}, ${(file.size / 1048576).toFixed(1)}MB · ${e1.name || e1.message})`);
+    } finally { URL.revokeObjectURL(url); }
+  }
 }
 
 /* ───────── 데이터 ───────── */
@@ -125,7 +145,7 @@ async function storeMedia(p, blob, kind, name) {
 async function importFile(p, file) {
   if (file.type.startsWith('video/')) return { id: await storeMedia(p, file, 'video', file.name), kind: 'video' };
   // 큰 사진은 메모리 절약을 위해 긴 변 2160px로 줄여 저장
-  const bmp = await createImageBitmap(file);
+  const bmp = await decodeImage(file);
   const k = Math.min(1, 2160 / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
@@ -337,7 +357,7 @@ async function addMediaScenes(p, files, assets) {
       p.scenes.push(m.kind === 'video'
         ? newScene({ mediaId: m.id, mediaKind: 'video', motion: 'none', duration: Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)) })
         : newScene({ mediaId: m.id, mediaKind: 'image', motion: MOTIONS[n % 4] }));
-    } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name}`); }
+    } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name} — ${e.message || e}`); }
   }
 }
 
@@ -585,7 +605,7 @@ function sceneSheet() {
         s.mediaId = m.id; s.mediaKind = m.kind;
         if (m.kind === 'video') { s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)); s.motion = 'none'; }
         changed({ audio: true }); L.close(); maybeAutoFx();
-      } catch { toast('파일을 불러오지 못했어요'); }
+      } catch (e) { toast(`파일을 불러오지 못했어요: ${e.message || e}`); }
     },
   });
 }
@@ -593,7 +613,7 @@ function sceneSheet() {
    전신 그림을 저장해 두고 여러 영상에서 진행자로 쓴다. 그림은 ChatGPT·Gemini 등에서 만들어 넣고,
    배경이 단색이면 기기에서 지운다(테두리에서 비슷한 색을 채워 나가며 투명하게). */
 async function cutout(file) {
-  const bmp = await createImageBitmap(file);
+  const bmp = await decodeImage(file);
   const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
   const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -723,7 +743,8 @@ function mouthSheet(target, photoId, title, pending, removed, done) {
       let ok = 0, bad = 0;
       for (let i = 0; i < files.length && i < slots.length; i++) {
         toast(`얼굴을 맞추는 중… ${i + 1} / ${Math.min(files.length, slots.length)}`);
-        const blob = await shrinkPhoto(files[i], 1280), face = await faceOfBlob(blob);
+        let blob, face;
+        try { blob = await shrinkPhoto(files[i], 1280); face = await faceOfBlob(blob); } catch (e) { console.warn(e); toast(e.message || '그림을 읽지 못했어요'); bad++; continue; }
         if (!face) { bad++; continue; }
         const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'mouth.jpg' }); pending.add(id);
         const old = target.mouths[slots[i]]; if (old && !pending.delete(old.id)) removed.add(old.id);
@@ -869,19 +890,24 @@ async function charSheet(orig) {
     put: async () => {
       const [f] = await pickFiles('image/*'); if (!f) return;
       toast('배경을 지우고 얼굴을 찾는 중…');
+      let step = '그림 열기';
       try {
-        const { blob, removed } = await cutout(f);
+        const photo = await shrinkPhoto(f); // 먼저 원본을 줄여 두고 이후는 이것으로만 작업
+        step = '배경 지우기';
+        let blob = photo, removed = false;
+        try { ({ blob, removed } = await cutout(new File([photo], 'photo.jpg', { type: 'image/jpeg' }))); } catch (e) { console.warn('배경 지우기 실패', e); }
+        step = '저장';
         if (pendingImage) await db.del('media', pendingImage);
         if (pendingPhoto) await db.del('media', pendingPhoto);
         const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'character.png' });
         pendingImage = id; c.imageId = id; showImg(id);
         // 말하는 사진용: 배경을 지우지 않은 원본(긴 변 1600px)과 얼굴 점
-        const photo = await shrinkPhoto(f), pid = uid();
+        const pid = uid();
         await db.put('media', { id: pid, blob: photo, kind: 'image', name: 'character-photo.jpg' });
         pendingPhoto = pid; c.photoId = pid;
         c.face = await faceOfBlob(photo);
         toast(`${removed ? '배경을 지웠어요' : '배경이 복잡해 그대로 넣었어요'}${c.face ? ' · 얼굴을 찾아 말하는 캐릭터로 쓸 수 있어요' : ' · 얼굴을 찾지 못해 말하기 기능은 못 써요'}. 저장을 눌러 주세요`);
-      } catch (e) { console.warn(e); toast('그림을 불러오지 못했어요'); }
+      } catch (e) { console.warn(e); toast(`그림을 넣지 못했어요 (${step}): ${e.message || e}`); }
     },
     save: async () => { if (await save()) { L.close(); toast('캐릭터를 저장했어요'); homeChars(); } },
     make: async () => { if (!(await save())) return; L.close(); homeChars(); aiSheet(async (p) => { await db.put('projects', p); openEditor(p.id); }, c); },
@@ -898,7 +924,7 @@ async function charSheet(orig) {
 const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, mouths: { ...(c.mouths || {}) }, poses: (c.poses || []).map((x) => ({ ...x, mouths: { ...(x.mouths || {}) } })), name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
 // 말하는 사진 준비: 사진 줄이기, 얼굴 찾기, 편집기에 말하는 엔진 붙이기
 async function shrinkPhoto(file, max = 1600) {
-  const bmp = await createImageBitmap(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const bmp = await decodeImage(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
   return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
@@ -1136,7 +1162,7 @@ async function putMedia(s, f) {
     } else if (s.motion === 'none') s.motion = 'zoomIn';
     changed({ audio: true });
     return true;
-  } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name}`); return false; }
+  } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name} — ${e.message || e}`); return false; }
 }
 
 /* ───────── 장면별 효과 자동 추천 ─────────
