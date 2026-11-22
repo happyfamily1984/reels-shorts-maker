@@ -676,6 +676,7 @@ function charPrompt(ch) {
 - 세로 이미지, 캐릭터가 화면 가운데에 크게`;
 }
 // 아바타 사진 세트: 같은 인물의 여러 자세. 장면마다 어울리는 자세로 말하게 한다 (주문서 순서 = 넣는 순서)
+const POSES_NOTE = '여러 장을 한 그림에 격자로 줘도 괜찮아요 (앱이 칸별로 잘라요). 칸 순서는 왼쪽 위부터 번호 순서대로.';
 const POSES = [
   ['hello', '인사', '한 손을 들어 손을 흔들며 밝게 웃는 모습'],
   ['explain', '설명', '한 손을 앞으로 펼쳐 내밀며 차분히 설명하는 모습'],
@@ -702,27 +703,113 @@ ${withPhoto ? '- 첨부한 사진 속 인물과 똑같은 얼굴·머리·체형
 - 입은 자연스럽게 다물거나 살짝 웃는 정도로
 - ${POSES.length}장 모두 같은 옷·같은 조명·같은 단순한 연회색 배경
 - 글자·로고·워터마크 없이
+- ${POSES_NOTE}
 
 [${POSES.length}장]
 ${POSES.map(([, label, d], i) => `${i + 1}. ${label}: ${d}`).join('\n')}`;
 }
+/* ───────── 격자 그림 나누기 ─────────
+   이미지 AI가 여러 장을 한 그림 안에 격자(2×2 등)로 줄 때가 많다. 칸 사이 경계를 찾아 칸마다 따로 자른다 (읽는 순서: 왼→오, 위→아래). */
+const GRIDS = [[2, 2], [3, 1], [1, 3], [2, 3], [3, 2], [2, 5], [5, 2], [3, 3], [4, 3], [3, 4]];
+function lineScores(bmp) {
+  const w = 240, h = Math.max(8, Math.round(bmp.height / bmp.width * w));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(bmp, 0, 0, w, h);
+  const d = g.getImageData(0, 0, w, h).data, L = (x, y) => { const i = (y * w + x) * 4; return d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11; };
+  // 경계선 점수: 그 줄이 고르게 한 색이거나(구분선), 바로 옆 줄과 크게 다르면(그림끼리 맞닿은 곳) 높다
+  const col = (x) => { let m = 0, v = 0, j = 0; for (let y = 0; y < h; y++) { const a = L(x, y); m += a; v += a * a; if (x > 0) j += Math.abs(a - L(x - 1, y)); } m /= h; return { flat: Math.sqrt(Math.max(0, v / h - m * m)), jump: j / h }; };
+  const row = (y) => { let m = 0, v = 0, j = 0; for (let x = 0; x < w; x++) { const a = L(x, y); m += a; v += a * a; if (y > 0) j += Math.abs(a - L(x, y - 1)); } m /= w; return { flat: Math.sqrt(Math.max(0, v / w - m * m)), jump: j / w }; };
+  return { w, h, cols: Array.from({ length: w }, (_, x) => col(x)), rows: Array.from({ length: h }, (_, y) => row(y)) };
+}
+// n칸으로 나눌 때 경계 위치(0~1)를 찾는다. 기대 위치 근처에 구분선이 없으면 null
+function findCuts(arr, n) {
+  const cuts = [];
+  for (let k = 1; k < n; k++) {
+    const mid = Math.round(arr.length * k / n), r = Math.max(2, Math.round(arr.length * 0.04));
+    let best = null;
+    for (let i = mid - r; i <= mid + r; i++) {
+      const a = arr[i]; if (!a) continue;
+      const score = a.flat < 10 ? 100 - a.flat : a.jump > 22 ? a.jump : 0;
+      if (score && (!best || score > best.score)) best = { i, score };
+    }
+    if (!best) return null;
+    cuts.push(best.i / arr.length);
+  }
+  return cuts;
+}
+function guessGrid(bmp) {
+  const sc = lineScores(bmp);
+  let found = null;
+  for (const [cn, rn] of GRIDS) {
+    const cx = cn > 1 ? findCuts(sc.cols, cn) : [], cy = rn > 1 ? findCuts(sc.rows, rn) : [];
+    if (cx && cy && cn * rn > (found ? found[0] * found[1] : 1)) found = [cn, rn];
+  }
+  return found;
+}
+async function splitGrid(file, cn, rn) {
+  const bmp = await decodeImage(file), sc = lineScores(bmp);
+  const xs = [0, ...(cn > 1 ? findCuts(sc.cols, cn) || Array.from({ length: cn - 1 }, (_, k) => (k + 1) / cn) : []), 1];
+  const ys = [0, ...(rn > 1 ? findCuts(sc.rows, rn) || Array.from({ length: rn - 1 }, (_, k) => (k + 1) / rn) : []), 1];
+  const out = [], inset = 0.006;
+  for (let r = 0; r < rn; r++) for (let q = 0; q < cn; q++) {
+    const x0 = (xs[q] + (q ? inset : 0)) * bmp.width, x1 = (xs[q + 1] - (q < cn - 1 ? inset : 0)) * bmp.width;
+    const y0 = (ys[r] + (r ? inset : 0)) * bmp.height, y1 = (ys[r + 1] - (r < rn - 1 ? inset : 0)) * bmp.height;
+    const c = document.createElement('canvas'); c.width = Math.round(x1 - x0); c.height = Math.round(y1 - y0);
+    c.getContext('2d').drawImage(bmp, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.93));
+    out.push(new File([blob], `cell${out.length + 1}.jpg`, { type: 'image/jpeg', lastModified: file.lastModified + out.length }));
+  }
+  bmp.close();
+  return out;
+}
+// 한 그림이 격자면 나눌지 묻는다. need: 필요한 장수(기본 칸 수 추천에 사용)
+async function maybeSplit(files, need) {
+  const out = [];
+  for (const f of files) {
+    let bmp; try { bmp = await decodeImage(f); } catch { out.push(f); continue; }
+    const guess = guessGrid(bmp), url = URL.createObjectURL(f); bmp.close();
+    const def = guess || (files.length === 1 && need > 1 ? (need === 4 ? [2, 2] : need >= 10 ? [2, 5] : [2, 2]) : null);
+    if (!def) { URL.revokeObjectURL(url); out.push(f); continue; }
+    const pick = await new Promise((res) => {
+      let v = def.join('x');
+      const L = sheet('격자 그림 나누기', `<div class="mut">${guess ? '이 그림은 여러 칸으로 나뉜 것 같아요.' : '여러 장이 한 그림에 들어 있나요?'} 칸 수를 고르면 왼쪽 위부터 순서대로 잘라 따로 넣어요.</div>
+        <div style="text-align:center;margin:10px 0"><img src="${url}" style="max-width:100%;max-height:34vh;border-radius:12px"></div>
+        ${chips('g', [['1x1', '나누지 않음'], ...GRIDS.map(([a, b]) => [`${a}x${b}`, `가로 ${a} × 세로 ${b}`])], v)}
+        <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">확인</button></div>`);
+      let done = false;
+      bindChips(L.el, (k, val) => { v = val; });
+      L.onClose = () => { if (!done) res(null); };
+      wire(L, { ok: () => { done = true; res(v.split('x').map(Number)); L.close(); } });
+    });
+    URL.revokeObjectURL(url);
+    if (!pick) continue;
+    if (pick[0] * pick[1] === 1) out.push(f); else out.push(...await splitGrid(f, pick[0], pick[1]));
+  }
+  return out;
+}
+
 // 입 모양 세트: 같은 사진에서 입(과 눈)만 바꾼 사진들. 넣는 순서 = 아래 순서
 const MOUTHS = [['half', '반쯤 열림', "입을 반쯤 벌린 모습 ('어' 발음, 윗니가 살짝 보임)"], ['open', '크게 열림', "입을 크게 벌린 모습 ('아' 발음, 윗니와 혀가 보이고 턱이 살짝 내려감)"], ['round', '오 모양', "입술을 동그랗게 모은 모습 ('오' 발음)"], ['blink', '눈 감음', '입은 첨부 사진 그대로 다물고, 눈만 자연스럽게 감은 모습']];
-const mouthPrompt = () => `첨부한 사진을 그대로 바탕으로, 입 모양(마지막 장은 눈)만 다른 사진 ${MOUTHS.length}장을 각각 따로 만들어 주세요. 말하는 영상의 입 움직임에 씁니다.
+const mouthPrompt = () => `첨부한 사진을 그대로 바탕으로, 입 모양(마지막 칸은 눈)만 다른 ${MOUTHS.length}가지 모습을 이미지 1장에 2×2 격자로 만들어 주세요. 말하는 영상의 입 움직임에 씁니다.
+
+[격자]
+- 칸 순서: 1 왼쪽 위, 2 오른쪽 위, 3 왼쪽 아래, 4 오른쪽 아래
+- 칸 사이에 얇은 흰색 구분선, 네 칸의 크기는 똑같이
+- 각 칸은 첨부 사진과 같은 구도·같은 크기로 (인물을 확대하거나 옮기지 않기)
 
 [꼭 지켜 주세요]
 - 얼굴·머리·표정의 나머지·옷·자세·손·배경·조명·구도·인물 크기와 위치를 첨부 사진과 완전히 똑같이 유지 (확대·이동·다시 그리기 금지)
 - 바꾸는 곳은 입(과 턱의 자연스러운 움직임)뿐, 마지막 장만 눈
-- 이미지 비율과 해상도도 첨부 사진과 같게, 글자·로고 없이
+- 글자·번호·로고 없이
 
-[${MOUTHS.length}장]
+[${MOUTHS.length}칸]
 ${MOUTHS.map(([, l, d], i) => `${i + 1}. ${l}: ${d}`).join('\n')}`;
 const charMediaIds = (c) => (c ? [c.imageId, c.photoId, ...Object.values(c.mouths || {}).map((m) => m.id), ...(c.poses || []).flatMap((x) => [x.id, ...Object.values(x.mouths || {}).map((m) => m.id)])].filter(Boolean) : []);
 // target: 캐릭터 대표({photoId, face, mouths}) 또는 자세({id, face, mouths}). 저장은 캐릭터 화면의 저장 버튼으로.
 function mouthSheet(target, photoId, title, pending, removed, done) {
   target.mouths = target.mouths || {};
   const L = sheet(`👄 입 모양 세트 — ${esc(title)}`, `
-    <div class="mut">이 사진을 이미지 AI에 보내 <b>입만 바꾼 사진 ${MOUTHS.length}장</b>을 받으세요 (Gemini·ChatGPT처럼 사진 고치기를 잘하는 AI가 좋아요). 받은 순서대로 넣으면 말할 때 진짜 입 모양으로 바뀌어요.</div>
+    <div class="mut">이 사진을 이미지 AI에 보내 <b>입만 바꾼 ${MOUTHS.length}칸 격자 그림</b>을 받아 넣으세요 (ChatGPT·Gemini처럼 사진 고치기를 잘하는 AI가 좋아요). 격자 그림은 앱이 4장으로 잘라 순서대로 넣고, 따로 받은 사진 ${MOUTHS.length}장을 넣어도 돼요.</div>
     <div class="poses" id="ml" style="grid-template-columns:repeat(5,1fr)"></div>
     <div class="row" style="margin-top:10px"><button data-act="send">📤 보내기</button><button data-act="copy">📋 복사</button><button class="pri" data-act="put">🖼 넣기</button></div>`);
   const draw = () => {
@@ -736,8 +823,10 @@ function mouthSheet(target, photoId, title, pending, removed, done) {
     copy: () => copyText(mouthPrompt(), '입 모양 주문서를 복사했어요'),
     rm: (b) => { const m = target.mouths[b.dataset.k]; delete target.mouths[b.dataset.k]; if (!pending.delete(m.id)) removed.add(m.id); draw(); done(); },
     put: async () => {
-      const files = await pickFiles('image/*', true); if (!files.length) return;
+      let files = await pickFiles('image/*', true); if (!files.length) return;
       files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      if (files.length < MOUTHS.length) files = await maybeSplit(files, MOUTHS.length);
+      if (!files.length) return;
       const empty = MOUTHS.map(([k]) => k).filter((k) => !target.mouths[k]);
       const slots = empty.length >= files.length ? empty : MOUTHS.map(([k]) => k);
       let ok = 0, bad = 0;
@@ -857,8 +946,10 @@ async function charSheet(orig) {
     psend: () => { read(); const ref = c.photoId || c.imageId; ref ? sendWithImage(posePrompt(c, true), ref) : sendText(posePrompt(c, false)); },
     pcopy: () => { read(); copyText(posePrompt(c, !!(c.photoId || c.imageId)), `사진 ${POSES.length}장 주문서를 복사했어요`); },
     pput: async () => {
-      const files = await pickFiles('image/*', true); if (!files.length) return;
+      let files = await pickFiles('image/*', true); if (!files.length) return;
       files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      if (files.length < POSES.length) files = await maybeSplit(files, POSES.length);
+      if (!files.length) return;
       let ok = 0, bad = 0;
       for (const f of files) {
         toast(`얼굴을 찾는 중… ${ok + bad + 1} / ${files.length}`);
