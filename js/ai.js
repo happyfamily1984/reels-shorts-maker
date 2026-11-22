@@ -81,8 +81,8 @@ const SCHEMA = {
     scenes: {
       type: 'array',
       items: {
-        type: 'object', required: ['caption', 'narration', 'image'],
-        properties: { caption: { type: 'string' }, narration: { type: 'string' }, image: { type: 'string' } },
+        type: 'object', required: ['caption', 'narration', 'image', 'motion'],
+        properties: { caption: { type: 'string' }, narration: { type: 'string' }, image: { type: 'string' }, motion: { type: 'string' } },
       },
     },
     description: { type: 'string' },
@@ -90,7 +90,8 @@ const SCHEMA = {
   },
 };
 
-const IMAGE_RULES = `- image: 이 장면의 배경으로 쓸 세로(9:16) 이미지를 이미지 생성 AI에게 주문하는 그림 설명. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 자막이 화면 아래쪽에 올라가므로 주요 피사체는 화면 가운데~위쪽에 둡니다. 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 앞 장면에 나온 인물·물건이 다시 나오면 같은 생김새로 다시 묘사합니다.
+const IMAGE_RULES = `- image: 이 장면의 배경으로 쓸 세로(9:16) 이미지를 이미지 생성 AI에게 주문하는 그림 설명. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 그림은 화면 전체를 꽉 채우고(빈 여백·단색 띠 없이), 자막이 올라갈 아래쪽 1/4에는 얼굴·중요한 물건이 오지 않게 합니다. 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 앞 장면에 나온 인물·물건이 다시 나오면 같은 생김새로 다시 묘사합니다.
+- motion: 이 그림을 영상 생성 AI로 4~8초 움직이게 만들 때의 움직임 설명 1~2문장. 인물의 동작·몸짓·표정 변화(예: 손을 펼치며 설명하다 고개를 끄덕인다)와 카메라 움직임(예: 천천히 다가간다)을 구체적으로 씁니다.
 - look: 모든 장면 이미지에 공통으로 적용할 화풍 한 문장 (예: 밝은 자연광의 실사 사진, 따뜻한 파스텔 톤 일러스트). 주제와 분위기에 어울리게 고릅니다.`;
 
 const GUIDE = `당신은 인스타그램 릴스·유튜브 쇼츠 전문 대본 작가입니다. 아래 주제로 세로형 숏폼 영상 대본을 한국어로 써 주세요.
@@ -113,8 +114,9 @@ function charGuide(ch, prev) {
   let g = `\n\n[진행 캐릭터]\n이 영상은 캐릭터 '${ch.name}'이(가) 화면 구석에 나와 시청자에게 직접 설명하는 형식입니다.
 - 성격·말투: ${ch.persona || '친근하고 밝은 말투'}
 - narration은 이 캐릭터가 말하는 대사입니다. 캐릭터의 말투로, 시청자에게 말을 거는 1인칭 구어체로 씁니다. 첫 장면에서 자연스럽게 자기 이름을 밝혀도 좋습니다.
-- 캐릭터는 영상 위에 따로 합성되므로 image에는 캐릭터를 그리지 말고, 장면 내용을 보여 주는 배경·소품·상황만 묘사합니다.
-- 캐릭터 외형(참고): ${ch.look || ''}`;
+- image에는 이 캐릭터가 장면 내용에 맞는 행동을 하며 등장합니다. 매 장면 캐릭터 외형을 그대로 다시 묘사해 생김새가 같게 합니다.
+- motion에는 캐릭터가 시청자에게 이 장면의 말을 하며 설명하는 몸짓(손짓·표정·고개 끄덕임 등)을 씁니다.
+- 캐릭터 외형: ${ch.look || ''}`;
   if (prev && prev.length) g += `\n\n[시리즈]\n이 캐릭터의 지난 영상들입니다. 이번 영상은 그다음 편입니다. 지난 내용을 반복하지 말고, 첫 장면이나 둘째 장면에서 지난 편을 한마디로 짧게 언급해 이어지는 느낌을 줍니다.\n${prev.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
   return g;
 }
@@ -154,14 +156,15 @@ export async function generateCharacter(concept) {
 // 이미 있는 장면(대본으로 만들기·직접 입력)에 이미지 설명을 붙인다
 const IMG_SCHEMA = {
   type: 'object', required: ['look', 'images'],
-  properties: { look: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } },
+  properties: { look: { type: 'string' }, images: { type: 'array', items: { type: 'string' } }, motions: { type: 'array', items: { type: 'string' } } },
 };
-export async function generateImageIdeas({ title, scenes }) {
+export async function generateImageIdeas({ title, scenes, character }) {
   const list = scenes.map((s, i) => `${i + 1}. 자막: ${s.text || '(없음)'}${s.narration ? ` / 내레이션: ${s.narration}` : ''}`).join('\n');
   const res = await callText({
     input: `당신은 숏폼 영상의 아트 디렉터입니다. 아래 세로형 영상의 장면마다 배경 이미지를 이미지 생성 AI로 만들려고 합니다. 한국어로 답하세요.
 
-- images: 장면 순서대로 정확히 ${scenes.length}개. 각 항목은 그 장면 이미지를 주문하는 그림 설명입니다. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 자막이 화면 아래쪽에 올라가므로 주요 피사체는 화면 가운데~위쪽에 둡니다. 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 같은 인물·물건이 여러 장면에 나오면 매번 같은 생김새로 묘사합니다.
+- images: 장면 순서대로 정확히 ${scenes.length}개. 각 항목은 그 장면 이미지를 주문하는 그림 설명입니다. 무엇이 어디에 어떻게 보이는지(피사체·행동·배경·구도·조명·색감)를 2~3문장으로 구체적으로 씁니다. 그림은 화면 전체를 꽉 채우고(빈 여백·단색 띠 없이), 자막이 올라갈 아래쪽 1/4에는 얼굴·중요한 물건이 오지 않게 합니다.
+- motions: 장면 순서대로 정확히 ${scenes.length}개. 그 그림을 영상 생성 AI로 4~8초 움직이게 만들 때의 움직임(인물 동작·표정, 카메라 움직임) 1~2문장.${character ? `\n- 이 영상의 진행 캐릭터 '${character.name}'(외형: ${character.look})가 장면마다 등장해 설명합니다. images에 캐릭터를 같은 생김새로 넣고, motions에는 캐릭터가 말하며 설명하는 몸짓을 씁니다.` : ''} 그림 안에 글자·간판 문구·로고는 넣지 않습니다. 같은 인물·물건이 여러 장면에 나오면 매번 같은 생김새로 묘사합니다.
 - look: 모든 장면 이미지에 공통으로 적용할 화풍 한 문장.
 
 영상 제목: ${title}

@@ -239,6 +239,40 @@ public class MainActivity extends Activity {
             outStream.write(Base64.decode(b64, Base64.DEFAULT));
         }
 
+        /** fileBegin·fileChunk로 받은 그림을 Pictures/ShortsMaker에 저장하고, 글과 함께 다른 앱(Gemini·ChatGPT 등)으로 보낸다. */
+        @JavascriptInterface
+        public synchronized String shareImage(String text) {
+            try {
+                outStream.close();
+                outStream = null;
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Images.Media.DISPLAY_NAME, outName);
+                v.put(MediaStore.Images.Media.MIME_TYPE, outMime);
+                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ShortsMaker");
+                v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+                if (uri == null) return "그림을 준비하지 못했어요";
+                try (InputStream in = new FileInputStream(outFile); OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    byte[] buf = new byte[1 << 16];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                v.clear();
+                v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                getContentResolver().update(uri, v, null, null);
+                outFile.delete();
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType(outMime);
+                send.putExtra(Intent.EXTRA_STREAM, uri);
+                send.putExtra(Intent.EXTRA_TEXT, text);
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                runOnUiThread(() -> startActivity(Intent.createChooser(send, "움직이는 영상 만들기")));
+                return "ok";
+            } catch (Exception e) {
+                return "보내지 못했어요: " + e.getMessage();
+            }
+        }
+
         /** action: "save"(갤러리에 저장) 또는 "share"(저장 후 공유 창 열기). 사용자에게 보여줄 문구를 돌려준다. */
         @JavascriptInterface
         public synchronized String fileEnd(String action) {

@@ -213,8 +213,8 @@ export function drawFrame(ctx, p, t, assets) {
   if (ch) { drawPresenter(ctx, p, t, assets); drawTexts(ctx, p, s, local); }
 }
 
-// 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 끝을 넘으면 반복)
-const clipTime = (s, local, v) => ((s.trimStart || 0) + local) % (v.duration || 1);
+// 장면 안의 시각 → 원본 영상의 시각 (잘라낸 시작 지점 반영, 영상이 장면보다 짧으면 마지막 화면에서 멈춤)
+const clipTime = (s, local, v) => Math.min((s.trimStart || 0) + local, Math.max(0, (v.duration || 1) - 0.05));
 
 // 영상 클립을 현재 시각에 맞춘다 (미리보기·실시간 녹화용)
 export function syncVideos(p, t, assets, playing) {

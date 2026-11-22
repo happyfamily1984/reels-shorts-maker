@@ -292,7 +292,7 @@ async function aiSheet(create, preChar) {
         p.look = out.look || ''; p.tone = tone;
         if (ch) { p.char = charOf(ch); p.audio.ttsVoice = ch.voice; }
         p.scenes = out.scenes.map((sc, i) => newScene({
-          text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '',
+          text: sc.caption, narration: sc.narration || '', imgPrompt: sc.image || '', moveText: sc.motion || '',
           textPos: 'top',
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
@@ -342,6 +342,7 @@ async function openEditor(id) {
     if (p.subtitle) p.scenes.forEach((s) => { if (s.textPos === 'bottom') s.textPos = 'top'; });
     mig = true;
   }
+  if (p.char && !p.char.v2) { p.char.v2 = true; p.char.show = false; mig = true; }
   if (mig) db.put('projects', p);
   warmMix();
   // 미리보기 탭 = 재생/정지
@@ -576,14 +577,16 @@ async function cutout(file) {
     const med = (o) => border.map((i) => d[i * 4 + o]).sort((a, b) => a - b)[border.length >> 1];
     const bg = [med(0), med(1), med(2)];
     const dist = (i) => Math.abs(d[i * 4] - bg[0]) + Math.abs(d[i * 4 + 1] - bg[1]) + Math.abs(d[i * 4 + 2] - bg[2]);
-    if (border.filter((i) => dist(i) < 60).length > border.length * 0.7) {
+    // 사진 스튜디오처럼 은은한 그라데이션 배경도 지우도록: 이웃 픽셀끼리 색이 거의 같으면 계속 배경으로 번져 나간다
+    const near = (i, j) => Math.abs(d[i * 4] - d[j * 4]) + Math.abs(d[i * 4 + 1] - d[j * 4 + 1]) + Math.abs(d[i * 4 + 2] - d[j * 4 + 2]);
+    if (border.filter((i) => dist(i) < 90).length > border.length * 0.6) {
       const seen = new Uint8Array(w * h), q = [];
-      for (const i of border) if (dist(i) < 60) { seen[i] = 1; q.push(i); }
+      for (const i of border) if (dist(i) < 90) { seen[i] = 1; q.push(i); }
       while (q.length) {
         const i = q.pop(); d[i * 4 + 3] = 0;
         const x = i % w, y = (i / w) | 0;
         for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1]) {
-          if (j >= 0 && !seen[j] && dist(j) < 60) { seen[j] = 1; q.push(j); }
+          if (j >= 0 && !seen[j] && near(i, j) < 10 && dist(j) < 200) { seen[j] = 1; q.push(j); }
         }
       }
       // 가장자리를 부드럽게: 지운 곳과 맞닿은 픽셀은 배경색에 가까운 만큼 반투명
@@ -708,7 +711,7 @@ async function charSheet(orig) {
   });
 }
 // 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
-const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.imageId, side: 'right', frame: 'half', scale: 1 });
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: false, side: 'right', frame: 'half', scale: 1 });
 
 /* ───────── 장면별 이미지 (외부 AI로 그려서 넣기) ───────── */
 // 복사: 앱(APK)에서는 네이티브 클립보드, 브라우저에서는 Clipboard API → 안 되면 옛 방식
@@ -734,79 +737,133 @@ async function sendText(text) {
   copyText(text, '이 브라우저는 보내기를 지원하지 않아 복사만 했어요');
 }
 // ChatGPT 등에 그대로 붙여넣을 주문서. 장면 설명이 없으면 자막으로 대신 설명한다.
+const sceneWhat = (s) => (s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`;
+const IMG_RULES = (p) => `- 비율: 세로 9:16 (1080×1920). 그림이 화면 전체를 꽉 채우게 (위아래 빈 여백·단색 띠 없이)
+- 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
+- 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
+- 아래쪽 1/4에는 자막이 올라가니 얼굴·중요한 물건은 그보다 위에 두세요.${charNote(p)}`;
 function buildPrompt(p, i) {
-  const s = p.scenes[i];
-  const what = (s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`;
   return `세로형 숏폼 영상(인스타 릴스·유튜브 쇼츠)의 ${i + 1}번째 장면에 쓸 이미지를 1장 만들어 주세요.
 
 [그림 내용]
-${what}
+${sceneWhat(p.scenes[i])}
 
 [조건]
-- 비율: 세로 9:16 (1080×1920)
-- 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
-- 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
-- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.${charNote(p)}`;
+${IMG_RULES(p)}`;
 }
 function charNote(p) {
   const c = p.char; if (!c) return '';
   if (c.show && c.imageId) return `\n- 진행 캐릭터는 영상에 따로 합성하니 그림에 넣지 마세요. 화면 ${c.side === 'left' ? '왼쪽' : '오른쪽'} 아래는 비워 두세요.`;
-  return `\n\n[등장 캐릭터] ${c.name}: ${c.look}\n캐릭터가 나오는 장면이면 첨부한 캐릭터 그림과 똑같은 생김새로 그려 주세요.`;
+  return `\n\n[등장 캐릭터] ${c.name}: ${c.look}\n캐릭터는 첨부한 캐릭터 그림과 똑같은 얼굴·머리·옷으로 그려 주세요.`;
 }
 function buildAllPrompts(p) {
   return `세로형 숏폼 영상에 쓸 장면 이미지 ${p.scenes.length}장을 순서대로 1장씩 만들어 주세요. 모든 장면은 같은 화풍으로 통일하고, 같은 인물·물건은 같은 생김새를 유지해 주세요.
 
 [공통 조건]
-- 비율: 세로 9:16 (1080×1920)
-- 화풍: ${(p.look || '').trim() || '선명하고 밝은 실사 사진 느낌'}
-- 이미지 안에 글자·자막·로고·워터마크는 넣지 마세요.
-- 화면 아래쪽 1/3에는 자막이 올라가니 주요 피사체는 가운데~위쪽에 두세요.${charNote(p)}
+${IMG_RULES(p)}
 
-${p.scenes.map((s, i) => `[장면 ${i + 1}] ${(s.imgPrompt || '').trim() || `"${(s.narration || s.text || '').trim()}" 라는 내용을 한눈에 보여 주는 장면.`}`).join('\n')}`;
+${p.scenes.map((s, i) => `[장면 ${i + 1}] ${sceneWhat(s)}`).join('\n')}`;
 }
+// 움직이는 영상 주문서: 장면 그림을 첫 화면으로, 인물이 실제로 움직이게 (Gemini·ChatGPT·Kling 등 이미지→영상 AI용)
+function buildMotionPrompt(p, i) {
+  const s = p.scenes[i], sec = Math.max(4, Math.min(8, Math.round(s.duration)));
+  const move = (s.moveText || '').trim() || '인물이 있으면 자연스럽게 숨 쉬고 눈을 깜빡이며, 장면 내용을 설명하듯 손짓하고 표정이 바뀐다. 카메라는 천천히 앞으로 다가간다.';
+  const talk = (s.narration || '').trim();
+  return `첨부한 이미지를 첫 화면으로 그대로 써서, 세로(9:16) ${sec}초 길이의 움직이는 영상을 만들어 주세요.
+
+[움직임]
+${move}${talk ? `\n인물은 시청자를 보며 이렇게 말하는 듯한 입 모양과 몸짓을 해 주세요: "${talk}"` : ''}
+
+[조건]
+- 인물의 얼굴·머리·옷과 배경은 첨부한 이미지와 똑같이 유지 (다른 사람으로 바뀌지 않게)
+- 움직임은 자연스럽고 부드럽게, 화면이 갑자기 바뀌거나 잘리지 않게
+- 글자·자막·로고는 넣지 마세요
+- 소리는 없어도 됩니다 (음성은 따로 넣어요)`;
+}
+// 그림과 주문서를 함께 다른 앱으로 보낸다 (앱: 네이티브 공유 / 브라우저: Web Share) — 주문서는 클립보드에도 복사
+async function sendWithImage(text, mediaId) {
+  const rec = mediaId && await db.get('media', mediaId);
+  if (!rec || rec.kind !== 'image') return sendText(text);
+  if (NATIVE && NATIVE.copy) { try { NATIVE.copy(text); } catch {} } else { try { await navigator.clipboard.writeText(text); } catch {} }
+  if (NATIVE && NATIVE.shareImage) {
+    toast('그림을 준비하는 중…');
+    const u8 = new Uint8Array(await rec.blob.arrayBuffer()), STEP = 3 * 256 * 1024;
+    NATIVE.fileBegin(`scene_${Date.now()}.jpg`, rec.blob.type || 'image/jpeg');
+    for (let o = 0; o < u8.length; o += STEP) {
+      let bin = ''; const part = u8.subarray(o, o + STEP);
+      for (let i = 0; i < part.length; i += 32768) bin += String.fromCharCode.apply(null, part.subarray(i, i + 32768));
+      NATIVE.fileChunk(btoa(bin));
+    }
+    const r = NATIVE.shareImage(text);
+    return toast(r === 'ok' ? 'Gemini·ChatGPT·Kling 등을 고르세요 (주문서는 복사도 돼 있어요)' : r);
+  }
+  const file = new File([rec.blob], 'scene.jpg', { type: rec.blob.type || 'image/jpeg' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], text }); } catch {} return; }
+  copyText(text, '이 브라우저는 그림 보내기를 지원하지 않아 주문서만 복사했어요');
+}
+const stillOf = (s) => (s.mediaKind === 'image' ? s.mediaId : s.stillId) || null; // 움직이게 만들 원본 그림
 function imageSheet() {
   const E = cur, p = E.p;
   if (!p.scenes.length) return toast('먼저 장면을 추가해 주세요');
   pause();
-  const done = p.scenes.filter((s) => s.mediaId).length, noIdea = p.scenes.some((s) => !(s.imgPrompt || '').trim());
-  const L = sheet('🖼 장면별 이미지', `
-    <div class="mut">① 📤 보내기(ChatGPT·Gemini 선택) 또는 📋 복사 → ② 이미지 AI에서 그림 만들기 → ③ 만든 그림을 저장 → ④ 🖼 넣기. 모든 장면에 이미지가 들어가면 장면별 효과가 자동으로 적용돼요.</div>
+  const done = p.scenes.filter((s) => s.mediaId).length, moving = p.scenes.filter((s) => s.mediaKind === 'video').length;
+  const noIdea = p.scenes.some((s) => !(s.imgPrompt || '').trim());
+  const L = sheet('🖼 장면별 이미지·모션', `
+    <div class="mut"><b>그림</b>: 📤 보내기 → 이미지 AI에서 그림 만들기 → 🖼 넣기<br><b>모션</b>: 그림을 넣은 뒤 🎬 움직이게 → 그림과 주문서가 함께 넘어가요 → Gemini·ChatGPT·Kling 등에서 영상 만들기 → 🎞 영상 넣기</div>
     <label>공통 화풍 (모든 장면에 적용)</label><input type="text" id="lk" value="${esc(p.look || '')}" placeholder="예) 따뜻한 자연광의 실사 사진">
     <div class="row" style="margin-top:10px"><button data-act="ai">🤖 ${noIdea ? 'AI 장면 설명' : '설명 다시 쓰기'}</button><button data-act="all">📋 전체 복사</button><button data-act="allSend">📤 전체 보내기</button></div>
-    <div class="row" style="margin-top:8px"><button data-act="bulk">🖼 한꺼번에 넣기</button><button data-act="fx">✨ 효과 추천</button></div>
-    <div class="sec" style="margin-top:14px">이미지 ${done} / ${p.scenes.length}장</div>
+    <div class="row" style="margin-top:8px"><button data-act="bulk">🖼 그림 일괄</button><button data-act="bulkV">🎞 영상 일괄</button><button data-act="fx">✨ 효과 추천</button></div>
+    <div class="sec" style="margin-top:14px">그림 ${done} / ${p.scenes.length} · 움직이는 영상 ${moving} / ${p.scenes.length}</div>
     ${p.scenes.map((s, i) => `<div class="imgc" data-i="${i}"><canvas width="90" height="160"></canvas><div class="b">
-      <b>장면 ${i + 1}</b><span class="mut">${esc(s.text || '(자막 없음)')}</span>
+      <b>장면 ${i + 1}${s.mediaKind === 'video' ? ' · 🎞 움직이는 영상' : ''}</b><span class="mut">${esc(s.text || '(자막 없음)')}</span>
       <textarea rows="3" data-p="${i}" placeholder="그림 설명 (비우면 자막으로 설명해요)">${esc(s.imgPrompt || '')}</textarea>
-      <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button data-act="send" data-i="${i}">📤 보내기</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${s.mediaId ? '교체' : '넣기'}</button></div>
+      <div class="row"><button data-act="copy" data-i="${i}">📋 복사</button><button data-act="send" data-i="${i}">📤 보내기</button><button class="${s.mediaId ? '' : 'pri'}" data-act="put" data-i="${i}">🖼 ${stillOf(s) ? '교체' : '넣기'}</button></div>
+      ${stillOf(s) ? `<textarea rows="2" data-m="${i}" placeholder="움직임 (비우면 자연스러운 몸짓으로)">${esc(s.moveText || '')}</textarea>
+      <div class="row"><button data-act="mcopy" data-i="${i}">📋 모션 복사</button><button data-act="msend" data-i="${i}">🎬 움직이게</button><button class="${s.mediaKind === 'video' ? '' : 'pri'}" data-act="vput" data-i="${i}">🎞 ${s.mediaKind === 'video' ? '영상 교체' : '영상 넣기'}</button></div>
+      ${s.mediaKind === 'video' && s.stillId ? `<div class="row"><button data-act="back" data-i="${i}">↩ 그림으로 되돌리기</button></div>` : ''}` : ''}
     </div></div>`).join('')}`);
   L.el.querySelectorAll('.imgc canvas').forEach((c) => thumb(c, p, p.scenes[+c.closest('.imgc').dataset.i], E.assets));
   $('#lk', L.el).oninput = (e) => { p.look = e.target.value; changed({ strip: false }); };
   L.el.querySelectorAll('textarea[data-p]').forEach((t) => { t.oninput = () => { p.scenes[+t.dataset.p].imgPrompt = t.value; changed({ strip: false }); }; });
-  const reopen = () => { L.close(); imageSheet(); };
+  L.el.querySelectorAll('textarea[data-m]').forEach((t) => { t.oninput = () => { p.scenes[+t.dataset.m].moveText = t.value; changed({ strip: false }); }; });
+  const reopen = () => { const y = $('.sheet', L.el).scrollTop; L.close(); imageSheet(); const sh = $('.backdrop:last-child .sheet', layers); if (sh) sh.scrollTop = y; };
   let busy = false;
+  const fill = async (kind) => {
+    const files = await pickFiles(kind === 'video' ? 'video/*' : 'image/*', true); if (!files.length) return;
+    // 받은 순서(= 장면 순서)대로 넣도록 저장된 시각 순으로 정렬. 그림은 그림 없는 장면부터, 영상은 아직 안 움직이는 장면부터 채운다.
+    files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+    let target = p.scenes.filter((s) => (kind === 'video' ? s.mediaKind !== 'video' : !s.mediaId));
+    if (!target.length) target = p.scenes.slice();
+    toast(kind === 'video' ? '영상을 넣는 중…' : '그림을 넣는 중…');
+    let n = 0;
+    for (let k = 0; k < files.length && k < target.length; k++) if (await putMedia(target[k], files[k])) n++;
+    reopen();
+    const unit = kind === 'video' ? '개' : '장';
+    toast(files.length > target.length ? `${n}${unit}를 넣었어요 (남는 ${files.length - target.length}${unit}는 뺐어요)` : `${n}${unit}를 넣었어요`);
+    setTimeout(maybeAutoFx, 600);
+  };
   wire(L, {
     copy: (b) => copyText(buildPrompt(p, +b.dataset.i), `장면 ${+b.dataset.i + 1} 프롬프트를 복사했어요`),
-    send: (b) => sendText(buildPrompt(p, +b.dataset.i)),
-    allSend: () => sendText(buildAllPrompts(p)),
+    send: (b) => (p.char && !p.char.show && p.char.imageId ? sendWithImage(buildPrompt(p, +b.dataset.i), p.char.imageId) : sendText(buildPrompt(p, +b.dataset.i))),
+    allSend: () => (p.char && !p.char.show && p.char.imageId ? sendWithImage(buildAllPrompts(p), p.char.imageId) : sendText(buildAllPrompts(p))),
     all: () => copyText(buildAllPrompts(p), `${p.scenes.length}개 장면 프롬프트를 한꺼번에 복사했어요`),
+    mcopy: (b) => copyText(buildMotionPrompt(p, +b.dataset.i), `장면 ${+b.dataset.i + 1} 모션 주문서를 복사했어요`),
+    msend: (b) => { const s = p.scenes[+b.dataset.i]; sendWithImage(buildMotionPrompt(p, +b.dataset.i), stillOf(s)); },
     put: async (b) => {
-      const i = +b.dataset.i, [f] = await pickFiles('image/*,video/*'); if (!f) return;
+      const i = +b.dataset.i, [f] = await pickFiles('image/*'); if (!f) return;
       if (await putMedia(p.scenes[i], f)) { reopen(); maybeAutoFx(); }
     },
-    bulk: async () => {
-      const files = await pickFiles('image/*,video/*', true); if (!files.length) return;
-      // 이미지 AI에서 받은 순서(= 장면 순서)대로 넣도록 저장된 시각 순으로 정렬해, 이미지가 없는 장면부터 채운다
-      files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
-      let empty = p.scenes.filter((s) => !s.mediaId);
-      if (!empty.length) empty = p.scenes.slice(); // 다 차 있으면 처음부터 교체
-      toast('이미지를 넣는 중…');
-      let n = 0;
-      for (let k = 0; k < files.length && k < empty.length; k++) if (await putMedia(empty[k], files[k])) n++;
-      reopen();
-      toast(files.length > empty.length ? `${n}장을 넣었어요 (남는 ${files.length - empty.length}장은 뺐어요)` : `${n}장을 넣었어요`);
-      setTimeout(maybeAutoFx, 600);
+    vput: async (b) => {
+      const i = +b.dataset.i, [f] = await pickFiles('video/*'); if (!f) return;
+      if (await putMedia(p.scenes[i], f)) { reopen(); toast('움직이는 영상을 넣었어요'); }
     },
+    back: (b) => {
+      const s = p.scenes[+b.dataset.i];
+      s.mediaId = s.stillId; s.mediaKind = 'image'; s.stillId = null; if (s.motion === 'none') s.motion = 'zoomIn';
+      changed({ audio: true }); reopen();
+    },
+    bulk: () => fill('image'),
+    bulkV: () => fill('video'),
     fx: async () => { await autoFx(p, E.assets); changed({ audio: true }); E.t = 0; reopen(); toast('✨ 장면별 효과를 추천해 적용했어요'); },
     ai: async (b) => {
       if (busy) return;
@@ -814,8 +871,8 @@ function imageSheet() {
       busy = true; b.textContent = '작성 중…';
       try {
         const { generateImageIdeas } = await import('./ai.js');
-        const out = await generateImageIdeas({ title: p.name, scenes: p.scenes });
-        p.scenes.forEach((s, i) => { if (out.images[i]) s.imgPrompt = out.images[i]; });
+        const out = await generateImageIdeas({ title: p.name, scenes: p.scenes, character: p.char && !p.char.show ? p.char : null });
+        p.scenes.forEach((s, i) => { if (out.images[i]) s.imgPrompt = out.images[i]; if (out.motions?.[i]) s.moveText = out.motions[i]; });
         if (out.look) p.look = out.look;
         changed({ strip: false });
         if (L.el.isConnected) reopen();
@@ -824,14 +881,21 @@ function imageSheet() {
     },
   });
 }
-// 장면 하나에 파일을 넣는다 (사진은 움직임 유지, 영상은 길이를 영상에 맞춤)
+// 장면 하나에 파일을 넣는다.
+// 그림: 화면 움직임 유지. 영상: 원래 그림은 stillId로 기억(되돌리기·다시 주문용).
+// AI 음성이 있는 장면은 음성 길이에 맞춘 장면 길이를 그대로 두고, 영상 소리는 끈다 (영상이 짧으면 마지막 화면에서 멈춤).
 async function putMedia(s, f) {
   const E = cur, p = E.p;
   try {
     const m = await importFile(p, f); const a = await loadAsset(m.id); E.assets.set(m.id, a);
+    if (m.kind === 'video' && s.mediaKind === 'image') s.stillId = s.mediaId;
+    if (m.kind === 'image') s.stillId = null;
     s.mediaId = m.id; s.mediaKind = m.kind;
-    if (m.kind === 'video') { s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2)); s.motion = 'none'; }
-    else if (s.motion === 'none') s.motion = 'zoomIn';
+    if (m.kind === 'video') {
+      s.motion = 'none'; s.trimStart = 0;
+      if (s.ttsId || (s.narration || '').trim()) s.clipAudio = false;
+      else s.duration = Math.max(1, Math.min(15, Math.round(a.dur * 2) / 2));
+    } else if (s.motion === 'none') s.motion = 'zoomIn';
     changed({ audio: true });
     return true;
   } catch (e) { console.warn(e); toast(`불러오지 못함: ${f.name}`); return false; }
@@ -937,10 +1001,10 @@ async function styleSheet() {
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <label>글자 크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
     <label>캐릭터 진행자</label>${chips('char', [['', '없음'], ...chars.map((x) => [x.id, esc(x.name)]), ...(c && !chars.some((x) => x.id === c.id) ? [[c.id, esc(c.name)]] : [])], c ? c.id : '')}
-    ${c ? `<label>보이는 범위</label>${chips('frame', [['full', '전신'], ['half', '상반신'], ['face', '얼굴']], c.frame || 'half')}
+    ${c ? `<label>구석에 캐릭터 그림 합성 (배경이 지워진 그림일 때만 권장)</label>${chips('show', [['0', '끄기 — 장면 그림 안에 등장'], ['1', '켜기']], c.show ? '1' : '0')}
+    ${c.show ? `<label>보이는 범위</label>${chips('frame', [['full', '전신'], ['half', '상반신'], ['face', '얼굴']], c.frame || 'half')}
     <label>위치</label>${chips('side', [['right', '오른쪽'], ['left', '왼쪽']], c.side || 'right')}
-    <label>캐릭터 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">
-    <label>화면에 보이기</label>${chips('show', [['1', '켜기'], ['0', '끄기 (그림 주문에만 반영)']], c.show ? '1' : '0')}` : ''}
+    <label>캐릭터 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">` : ''}` : ''}
     <label>대사 자막 — 화면 아래에 대본 문장 전체를 작게 표시</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
@@ -959,7 +1023,8 @@ async function styleSheet() {
       }
       changed({ audio: true }); L.close(); styleSheet(); return;
     }
-    if (['frame', 'side', 'show'].includes(k)) { c[k] = k === 'show' ? v === '1' : v; changed({ strip: false }); return; }
+    if (k === 'show') { c.show = v === '1'; changed({ strip: false }); L.close(); styleSheet(); return; }
+    if (k === 'frame' || k === 'side') { c[k] = v; changed({ strip: false }); return; }
     if (k === 'tpl') {
       const [, style, tr, pos, anim] = TEMPLATES[v];
       Object.assign(st, style); p.transition = tr; p.scenes.forEach((x) => { x.transition = ''; });
