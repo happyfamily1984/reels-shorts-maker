@@ -137,3 +137,8 @@ a.dl button { color:var(--fg); }
 .pose img { width:100%; aspect-ratio:3/4; object-fit:cover; border-radius:10px; background:#0b0b16; }
 .pose span { font-size:11px; color:var(--mut); white-space:nowrap; }
 .pose button { position:absolute; top:2px; right:2px; width:22px; height:22px; padding:0; border-radius:50%; font-size:11px; background:#000a; }
+.pose .ph0 { width:100%; aspect-ratio:3/4; border-radius:10px; background:#0b0b16; border:1.5px dashed var(--line2); display:flex; align-items:center; justify-content:center; color:var(--mut); }
+/* 시트 안 슬라이더: 손잡이를 잡아야만 움직인다 (위아래로 밀어 스크롤할 때 값이 바뀌지 않게) */
+.sheet input[type=range] { pointer-events:none; }
+.sheet input[type=range]::-webkit-slider-thumb { pointer-events:auto; }
+.sheet input[type=range]::-moz-range-thumb { pointer-events:auto; }

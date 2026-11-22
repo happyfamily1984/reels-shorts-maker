@@ -370,6 +370,8 @@ async function openEditor(id) {
   }
   if (p.char && !p.char.v2) { p.char.v2 = true; p.char.show = false; mig = true; }
   if (p.char && !p.char.v3) { p.char.v3 = true; p.char.side = 'left'; p.char.scale = 1; mig = true; }
+  // 2.1의 높이 슬라이더가 스크롤 중 실수로 움직였을 수 있어 자막 높이를 한 번 기본값으로
+  if (!p.style.v4) { p.style.v4 = true; delete p.style.capY; delete p.style.subY; mig = true; }
   if (mig) db.put('projects', p);
   warmMix();
   // 미리보기 탭 = 재생/정지
@@ -684,6 +686,54 @@ ${withPhoto ? '- 첨부한 사진 속 인물과 똑같은 얼굴·머리·체형
 [${POSES.length}장]
 ${POSES.map(([, label, d], i) => `${i + 1}. ${label}: ${d}`).join('\n')}`;
 }
+// 입 모양 세트: 같은 사진에서 입(과 눈)만 바꾼 사진들. 넣는 순서 = 아래 순서
+const MOUTHS = [['half', '반쯤 열림', "입을 반쯤 벌린 모습 ('어' 발음, 윗니가 살짝 보임)"], ['open', '크게 열림', "입을 크게 벌린 모습 ('아' 발음, 윗니와 혀가 보이고 턱이 살짝 내려감)"], ['round', '오 모양', "입술을 동그랗게 모은 모습 ('오' 발음)"], ['blink', '눈 감음', '입은 첨부 사진 그대로 다물고, 눈만 자연스럽게 감은 모습']];
+const mouthPrompt = () => `첨부한 사진을 그대로 바탕으로, 입 모양(마지막 장은 눈)만 다른 사진 ${MOUTHS.length}장을 각각 따로 만들어 주세요. 말하는 영상의 입 움직임에 씁니다.
+
+[꼭 지켜 주세요]
+- 얼굴·머리·표정의 나머지·옷·자세·손·배경·조명·구도·인물 크기와 위치를 첨부 사진과 완전히 똑같이 유지 (확대·이동·다시 그리기 금지)
+- 바꾸는 곳은 입(과 턱의 자연스러운 움직임)뿐, 마지막 장만 눈
+- 이미지 비율과 해상도도 첨부 사진과 같게, 글자·로고 없이
+
+[${MOUTHS.length}장]
+${MOUTHS.map(([, l, d], i) => `${i + 1}. ${l}: ${d}`).join('\n')}`;
+const charMediaIds = (c) => (c ? [c.imageId, c.photoId, ...Object.values(c.mouths || {}).map((m) => m.id), ...(c.poses || []).flatMap((x) => [x.id, ...Object.values(x.mouths || {}).map((m) => m.id)])].filter(Boolean) : []);
+// target: 캐릭터 대표({photoId, face, mouths}) 또는 자세({id, face, mouths}). 저장은 캐릭터 화면의 저장 버튼으로.
+function mouthSheet(target, photoId, title, pending, removed, done) {
+  target.mouths = target.mouths || {};
+  const L = sheet(`👄 입 모양 세트 — ${esc(title)}`, `
+    <div class="mut">이 사진을 이미지 AI에 보내 <b>입만 바꾼 사진 ${MOUTHS.length}장</b>을 받으세요 (Gemini·ChatGPT처럼 사진 고치기를 잘하는 AI가 좋아요). 받은 순서대로 넣으면 말할 때 진짜 입 모양으로 바뀌어요.</div>
+    <div class="poses" id="ml" style="grid-template-columns:repeat(5,1fr)"></div>
+    <div class="row" style="margin-top:10px"><button data-act="send">📤 보내기</button><button data-act="copy">📋 복사</button><button class="pri" data-act="put">🖼 넣기</button></div>`);
+  const draw = () => {
+    const items = [['base', '바탕', { id: photoId }], ...MOUTHS.map(([k, l]) => [k, l, target.mouths[k]])];
+    $('#ml', L.el).innerHTML = items.map(([k, l, m]) => `<div class="pose">${m ? `<img data-id="${m.id}" alt="">` : '<div class="ph0">?</div>'}<span>${l}</span>${m && k !== 'base' ? `<button data-act="rm" data-k="${k}">✕</button>` : ''}</div>`).join('');
+    $('#ml', L.el).querySelectorAll('img[data-id]').forEach(async (im) => { im.src = await charImgUrl(im.dataset.id); });
+  };
+  draw();
+  wire(L, {
+    send: () => sendWithImage(mouthPrompt(), photoId),
+    copy: () => copyText(mouthPrompt(), '입 모양 주문서를 복사했어요'),
+    rm: (b) => { const m = target.mouths[b.dataset.k]; delete target.mouths[b.dataset.k]; if (!pending.delete(m.id)) removed.add(m.id); draw(); done(); },
+    put: async () => {
+      const files = await pickFiles('image/*', true); if (!files.length) return;
+      files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      const empty = MOUTHS.map(([k]) => k).filter((k) => !target.mouths[k]);
+      const slots = empty.length >= files.length ? empty : MOUTHS.map(([k]) => k);
+      let ok = 0, bad = 0;
+      for (let i = 0; i < files.length && i < slots.length; i++) {
+        toast(`얼굴을 맞추는 중… ${i + 1} / ${Math.min(files.length, slots.length)}`);
+        const blob = await shrinkPhoto(files[i], 1280), face = await faceOfBlob(blob);
+        if (!face) { bad++; continue; }
+        const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'mouth.jpg' }); pending.add(id);
+        const old = target.mouths[slots[i]]; if (old && !pending.delete(old.id)) removed.add(old.id);
+        target.mouths[slots[i]] = { id, face }; ok++;
+      }
+      draw(); done();
+      toast(`${ok}장을 넣었어요${bad ? ` · 얼굴을 찾지 못한 ${bad}장은 뺐어요` : ''}. 캐릭터 화면에서 저장을 눌러 주세요`);
+    },
+  });
+}
 // 장면마다 어울리는 자세: 첫 장면 인사, 마지막 감사, 물음 → 생각, 감탄 → 놀람, 나머지는 돌아가며
 function autoPoses(p) {
   const ps = p.char && p.char.poses; if (!ps || ps.length < 2) return;
@@ -734,8 +784,10 @@ async function charSheet(orig) {
     <label>목소리 (AI 음성)</label><select id="cvc">${VOICES.map((v) => `<option ${v === c.voice ? 'selected' : ''}>${v}</option>`).join('')}</select>
     <label>전신 그림 — 보내기·복사로 이미지 AI에 주문한 뒤 받은 그림을 넣으세요 (단색 배경은 자동으로 지워요)</label>
     <div class="row"><button data-act="send">📤 보내기</button><button data-act="copy">📋 복사</button><button class="pri" data-act="put">🖼 ${c.imageId ? '교체' : '넣기'}</button></div>
+    <label>입 모양 세트 — 말할 때 진짜 입 모양으로 바뀌게 (대표 사진)</label>
+    <div class="row"><button data-act="mouth" id="mb">👄 입 모양 세트</button></div>
     <label>아바타 사진 세트 — 다양한 표정·몸짓 ${POSES.length}장 (장면마다 다른 자세로 말해 더 자연스러워요)</label>
-    <div class="mut">📤 보내기로 Grok·ChatGPT·Gemini에 ${POSES.length}장을 한 번에 주문하고, 받은 사진들을 🖼 넣기로 한꺼번에 고르세요 (받은 순서대로 1~10번이 돼요). 위 그림이 있으면 그 얼굴로 만들도록 함께 보내요.</div>
+    <div class="mut">자세 사진을 누르면 그 자세의 입 모양 세트도 만들 수 있어요. 📤 보내기로 Grok·ChatGPT·Gemini에 ${POSES.length}장을 한 번에 주문하고, 받은 사진들을 🖼 넣기로 한꺼번에 고르세요 (받은 순서대로 1~10번이 돼요). 위 그림이 있으면 그 얼굴로 만들도록 함께 보내요.</div>
     <div class="row" style="margin-top:8px"><button data-act="psend">📤 보내기</button><button data-act="pcopy">📋 복사</button><button class="pri" data-act="pput">🖼 넣기</button></div>
     <div class="poses" id="pl"></div>
     <div class="row" style="margin-top:16px"><button class="pri" data-act="save">저장</button>${orig ? '<button data-act="make">🎬 이 캐릭터로 영상</button>' : ''}</div>
@@ -745,7 +797,8 @@ async function charSheet(orig) {
   showImg(c.imageId);
   const drawPoses = () => {
     const box = $('#pl', L.el);
-    box.innerHTML = c.poses.map((x, i) => `<div class="pose"><img data-i="${i}" alt=""><span>${i + 1}. ${esc(poseLabel(x.key))}</span><button data-act="prm" data-i="${i}">✕</button></div>`).join('') || '<span class="mut">아직 사진 세트가 없어요</span>';
+    box.innerHTML = c.poses.map((x, i) => `<div class="pose"><img data-i="${i}" data-act="pmouth" alt=""><span>${i + 1}. ${esc(poseLabel(x.key))}${Object.keys(x.mouths || {}).length ? ' 👄' : ''}</span><button data-act="prm" data-i="${i}">✕</button></div>`).join('') || '<span class="mut">아직 사진 세트가 없어요</span>';
+    const mb = $('#mb', L.el); if (mb) mb.textContent = `👄 입 모양 세트 (${Object.keys(c.mouths || {}).length} / ${MOUTHS.length})`;
     box.querySelectorAll('img[data-i]').forEach(async (im) => { im.src = await charImgUrl(c.poses[+im.dataset.i].id); });
   };
   drawPoses();
@@ -756,7 +809,7 @@ async function charSheet(orig) {
     const old = orig && orig.imageId !== c.imageId ? [orig.imageId, orig.photoId].filter(Boolean) : [];
     old.push(...removedPoses);
     c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null; pendingPhoto = null; pendingPoses.clear(); removedPoses.clear();
-    const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId, ...(p.char.poses || []).map((x) => x.id)] : [])));
+    const used = new Set([...(await db.all('projects')).flatMap((p) => charMediaIds(p.char)), ...charMediaIds(c)]);
     for (const id of old) if (!used.has(id)) db.del('media', id);
     Object.assign(orig || {}, c);
     return true;
@@ -802,7 +855,16 @@ async function charSheet(orig) {
       drawPoses();
       toast(`${ok}장을 넣었어요${bad ? ` · 얼굴을 찾지 못한 ${bad}장은 뺐어요 (정면 얼굴이 또렷해야 해요)` : ''}. 저장을 눌러 주세요`);
     },
-    prm: (b) => { const [x] = c.poses.splice(+b.dataset.i, 1); if (pendingPoses.delete(x.id)) db.del('media', x.id); else removedPoses.add(x.id); drawPoses(); },
+    prm: (b) => {
+      const [x] = c.poses.splice(+b.dataset.i, 1);
+      for (const id of [x.id, ...Object.values(x.mouths || {}).map((m) => m.id)]) { if (pendingPoses.delete(id)) db.del('media', id); else removedPoses.add(id); }
+      drawPoses();
+    },
+    mouth: () => {
+      if (!c.photoId || !c.face) return toast('먼저 위에 얼굴이 보이는 대표 사진을 넣어 주세요');
+      mouthSheet(c, c.photoId, '대표 사진', pendingPoses, removedPoses, drawPoses);
+    },
+    pmouth: (b) => { const x = c.poses[+b.dataset.i]; mouthSheet(x, x.id, `${+b.dataset.i + 1}. ${poseLabel(x.key)}`, pendingPoses, removedPoses, drawPoses); },
     copy: () => { read(); copyText(charPrompt(c), '전신 그림 프롬프트를 복사했어요'); },
     put: async () => {
       const [f] = await pickFiles('image/*'); if (!f) return;
@@ -826,14 +888,14 @@ async function charSheet(orig) {
     del: async () => {
       if (!(await confirmDlg(`"${c.name}" 캐릭터를 삭제할까요? 이미 만든 영상에는 그대로 남아요.`, '삭제', '취소'))) return;
       await db.del('characters', c.id);
-      const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId] : [])));
-      for (const id of [orig.imageId, orig.photoId]) if (id && !used.has(id)) db.del('media', id);
+      const used = new Set((await db.all('projects')).flatMap((p) => charMediaIds(p.char)));
+      for (const id of charMediaIds(orig)) if (!used.has(id)) db.del('media', id);
       L.close(); homeChars();
     },
   });
 }
 // 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
-const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, poses: (c.poses || []).slice(), name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, mouths: { ...(c.mouths || {}) }, poses: (c.poses || []).map((x) => ({ ...x, mouths: { ...(x.mouths || {}) } })), name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
 // 말하는 사진 준비: 사진 줄이기, 얼굴 찾기, 편집기에 말하는 엔진 붙이기
 async function shrinkPhoto(file, max = 1600) {
   const bmp = await createImageBitmap(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height));
@@ -845,9 +907,26 @@ async function faceOfBlob(blob) {
   try { const { findFace } = await import('./talk.js'); const bmp = await createImageBitmap(blob); const pts = await findFace(bmp); bmp.close(); return pts; }
   catch (e) { console.warn('얼굴 찾기 실패', e); return null; }
 }
+async function buildTalker(blob, face, mouths) {
+  const T = await import('./talk.js');
+  const base = await createImageBitmap(blob);
+  const frames = {};
+  for (const [k, m] of Object.entries(mouths || {})) {
+    try { const r = await db.get('media', m.id); if (r) frames[k] = { bmp: await createImageBitmap(r.blob), face: m.face }; } catch {}
+  }
+  return { tk: Object.keys(frames).length ? T.createFrameTalker(base, face, frames) : T.createTalker(base, face), t: undefined };
+}
 async function setupTalker(E) {
-  const c = E.p.char; E.assets.talker = null;
+  const c = E.p.char; E.assets.talker = null; E.assets.poses = null;
   if (!c) return;
+  // 캐릭터 화면에서 나중에 넣은 자세·입 모양 사진도 이 영상에 반영 (보이기·위치·크기는 영상 설정 유지)
+  const fresh = await db.get('characters', c.id);
+  if (fresh) {
+    const add = !(c.poses || []).length && (fresh.poses || []).length;
+    Object.assign(c, { imageId: fresh.imageId || c.imageId, photoId: fresh.photoId || c.photoId, face: fresh.face || c.face, mouths: { ...(fresh.mouths || {}) }, poses: (fresh.poses || []).map((x) => ({ ...x, mouths: { ...(x.mouths || {}) } })) });
+    if (add) autoPoses(E.p);
+    db.put('projects', E.p);
+  }
   const srcId = c.photoId || c.imageId; if (!srcId) return;
   try {
     const rec = await db.get('media', srcId); if (!rec) return;
@@ -857,13 +936,11 @@ async function setupTalker(E) {
       db.put('projects', E.p);
     }
     if (!c.face || cur !== E) return;
-    const { createTalker } = await import('./talk.js');
-    const bmp = await createImageBitmap(rec.blob);
-    E.assets.talker = { tk: createTalker(bmp, c.face), t: undefined };
+    E.assets.talker = await buildTalker(rec.blob, c.face, c.mouths);
     // 자세 사진들: 장면의 s.pose 로 고른다
     const poses = {};
     for (const x of c.poses || []) {
-      try { const r = await db.get('media', x.id); if (!r || cur !== E) continue; poses[x.key] = { tk: createTalker(await createImageBitmap(r.blob), x.face), t: undefined }; } catch (e) { console.warn(e); }
+      try { const r = await db.get('media', x.id); if (!r || cur !== E) continue; poses[x.key] = await buildTalker(r.blob, x.face, x.mouths); } catch (e) { console.warn(e); }
     }
     E.assets.poses = poses;
   } catch (e) { console.warn('말하는 캐릭터를 준비하지 못했어요', e); }
@@ -1150,6 +1227,7 @@ function scriptSheet() {
     },
   });
 }
+const stepRow = (k, label, [less, more]) => `<label>${label} <b data-sv="${k}"></b></label><div class="row"><button data-step="${k}" data-d="-1">${less}</button><button data-step="${k}" data-d="1">${more}</button><button data-step="${k}" data-d="0">기본</button></div>`;
 async function styleSheet() {
   const E = cur, p = E.p, st = p.style;
   const chars = (await db.all('characters')).filter((c) => c.imageId);
@@ -1161,32 +1239,41 @@ async function styleSheet() {
     <label>자막 색</label>${swatches('color', colors, st.color)}
     <label>글꼴</label>${chips('font', [['gothic', '고딕'], ['serif', '명조']], st.font)}
     <div class="sec" style="margin-top:16px">위 자막 (장면 제목)</div>
-    <label>크기 <b id="sv">${st.size}</b></label><input type="range" id="sz" min="48" max="140" step="4" value="${st.size}">
-    <label>높이 — 왼쪽: 위로 · 오른쪽: 아래로</label><input type="range" id="cy" min="0.04" max="0.5" step="0.01" value="${st.capY ?? CAP_Y}">
+    ${stepRow('size', '크기', ['－ 작게', '＋ 크게'])}
+    ${stepRow('capY', '높이', ['▲ 위로', '▼ 아래로'])}
     <div class="sec" style="margin-top:16px">아래 자막 (대사)</div>
     <label>보이기</label>${chips('subtitle', [['1', '켜기'], ['0', '끄기']], p.subtitle === false ? '0' : '1')}
-    <label>크기 <b id="ssv">${st.subSize || 54}</b></label><input type="range" id="ssz" min="34" max="96" step="2" value="${st.subSize || 54}">
-    <label>높이 — 왼쪽: 위로 · 오른쪽: 아래로</label><input type="range" id="sy" min="0.55" max="0.97" step="0.01" value="${st.subY ?? SUB_Y}">
+    ${stepRow('subSize', '크기', ['－ 작게', '＋ 크게'])}
+    ${stepRow('subY', '높이', ['▲ 위로', '▼ 아래로'])}
     <label>캐릭터 진행자</label>${chips('char', [['', '없음'], ...chars.map((x) => [x.id, esc(x.name)]), ...(c && !chars.some((x) => x.id === c.id) ? [[c.id, esc(c.name)]] : [])], c ? c.id : '')}
     ${c ? `<label>구석에 작은 캐릭터 창 띄우기</label>${chips('show', [['0', '끄기 — 장면 그림 안에 등장'], ['1', '켜기']], c.show ? '1' : '0')}
     ${c.show ? `<label>위치 — 원을 눌러 고르세요</label><div class="posgrid">${['tl', 'tc', 'tr', 'ml', '', 'mr', 'bl', 'bc', 'br'].map((k) => (k ? `<button data-pos="${k}" class="${charPos(c) === k ? 'on' : ''}" aria-label="${k}"></button>` : '<span>🎬</span>')).join('')}</div>
-    <label>캐릭터 창 크기 <b id="csv">${Math.round((c.scale || 1) * 100)}</b>%</label><input type="range" id="csz" min="0.6" max="1.6" step="0.05" value="${c.scale || 1}">` : ''}` : ''}
+    ${stepRow('scale', '캐릭터 창 크기', ['－ 작게', '＋ 크게'])}` : ''}` : ''}
     <label>장면 전환</label>${chips('transition', [['fade', '페이드'], ['slide', '슬라이드'], ['zoom', '줌'], ['none', '없음']], p.transition)}
     <label>모든 장면에 일괄 적용 — 자막 위치</label>${chips('all.textPos', [['top', '위'], ['center', '가운데'], ['bottom', '아래']], '')}
     <label>모든 장면에 일괄 적용 — 자막 효과</label>${chips('all.textAnim', [['pop', '팝'], ['fade', '페이드'], ['slide', '슬라이드'], ['type', '타자기'], ['none', '없음']], '')}`);
   wire(L, {});
-  $('#sz', L.el).oninput = (e) => { st.size = +e.target.value; $('#sv', L.el).textContent = st.size; changed(); };
+  // 크기·높이는 버튼으로만 바꾼다 (화면을 위아래로 밀다가 실수로 바뀌지 않게)
   // 위치·크기는 움직이는 동안 미리보기에 바로 보이게, 해당 자막이 보이는 장면 시점으로 맞춘다
   const showText = () => { E.t = sceneStart(p, E.sel) + Math.min(1, p.scenes[E.sel]?.duration / 2 || 0); };
-  $('#cy', L.el).oninput = (e) => { st.capY = +e.target.value; showText(); changed({ strip: false }); };
-  $('#ssz', L.el).oninput = (e) => { st.subSize = +e.target.value; $('#ssv', L.el).textContent = st.subSize; showText(); changed({ strip: false }); };
-  $('#sy', L.el).oninput = (e) => { st.subY = +e.target.value; showText(); changed({ strip: false }); };
+  const STEPS = {
+    size: [st, 'size', 84, 4, 48, 140, (v) => v],
+    capY: [st, 'capY', CAP_Y, 0.02, 0.04, 0.6, (v) => `위에서 ${Math.round(v * 100)}%`],
+    subSize: [st, 'subSize', 54, 2, 34, 96, (v) => v],
+    subY: [st, 'subY', SUB_Y, 0.02, 0.5, 0.97, (v) => `위에서 ${Math.round(v * 100)}%`],
+    scale: [c || {}, 'scale', 1, 0.1, 0.6, 1.6, (v) => `${Math.round(v * 100)}%`],
+  };
+  const showVal = (k) => { const [o, f, d, , , , fmtv] = STEPS[k]; const el = $(`[data-sv="${k}"]`, L.el); if (el) el.textContent = fmtv(o[f] ?? d); };
+  Object.keys(STEPS).forEach(showVal);
+  L.el.querySelectorAll('[data-step]').forEach((b) => b.onclick = () => {
+    const k = b.dataset.step, [o, f, d, step, lo, hi] = STEPS[k], dir = +b.dataset.d;
+    o[f] = dir ? Math.round(Math.min(hi, Math.max(lo, (o[f] ?? d) + dir * step)) * 100) / 100 : d;
+    showVal(k); showText(); changed({ strip: k === 'size' });
+  });
   L.el.querySelectorAll('.posgrid button').forEach((b) => b.onclick = () => {
     c.pos = b.dataset.pos; L.el.querySelectorAll('.posgrid button').forEach((x) => x.classList.toggle('on', x === b));
     showText(); changed({ strip: false });
   });
-  const csz = $('#csz', L.el);
-  if (csz) csz.oninput = () => { c.scale = +csz.value; $('#csv', L.el).textContent = Math.round(c.scale * 100); changed({ strip: false }); };
   bindChips(L.el, async (k, v) => {
     if (k === 'char') {
       const x = chars.find((y) => y.id === v);

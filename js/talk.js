@@ -160,10 +160,79 @@ export function createTalker(img, pts) {
 export function poseAt(t, amp) {
   const bp = (t + 0.7) % 4.1, blink = bp < 0.16 ? Math.sin(bp / 0.16 * Math.PI) : 0;
   return {
+    t,
     open: Math.min(1, amp * 1.15),
     blink,
     roll: Math.sin(t * 0.9) * 0.6 + amp * Math.sin(t * 5.3) * 0.5,
     nod: Math.sin(t * 1.3) * 0.4 + amp * Math.sin(t * 7.1) * 0.6,
     turn: Math.sin(t * 0.55) * 0.5,
   };
+}
+
+/* ───────── 입 모양 사진으로 말하기 ─────────
+   같은 사진을 이미지 AI로 '입만 바꿔' 받은 사진들(반쯤 열림·크게 열림·오 모양·눈 감음)을 쓴다.
+   받은 사진은 미세하게 어긋나므로, 입·턱 둘레가 아닌 얼굴 점(눈꼬리·코·얼굴 옆선)으로 위치·크기·기울기를 맞춘 뒤
+   입·턱 부분(또는 눈 부분)만 가장자리를 흐리게 오려 바탕 사진 위에 겹친다. 소리 크기에 따라 겹침 정도를 바꾼다. */
+const STABLE = [33, 133, 362, 263, 168, 6, 197, 195, 5, 4, 1, 234, 454, 127, 356];
+function similarity(fromPts, toPts, idx) {
+  // fromPts 좌표를 toPts 좌표로 옮기는 닮음 변환(이동·회전·크기) — 최소제곱
+  let fx = 0, fy = 0, tx = 0, ty = 0; const n = idx.length;
+  for (const i of idx) { fx += fromPts[i * 2]; fy += fromPts[i * 2 + 1]; tx += toPts[i * 2]; ty += toPts[i * 2 + 1]; }
+  fx /= n; fy /= n; tx /= n; ty /= n;
+  let a = 0, b = 0, d = 0;
+  for (const i of idx) {
+    const px = fromPts[i * 2] - fx, py = fromPts[i * 2 + 1] - fy, qx = toPts[i * 2] - tx, qy = toPts[i * 2 + 1] - ty;
+    a += px * qx + py * qy; b += px * qy - py * qx; d += px * px + py * py;
+  }
+  a /= d; b /= d; // [a -b; b a]
+  return [a, b, -b, a, tx - (a * fx - b * fy), ty - (b * fx + a * fy)];
+}
+const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+export function createFrameTalker(base, pts, frames) {
+  const W = base.width, H = base.height, P = (i) => [pts[i * 2], pts[i * 2 + 1]];
+  const faceW = Math.hypot(P(454)[0] - P(234)[0], P(454)[1] - P(234)[1]), faceH = Math.hypot(P(152)[0] - P(10)[0], P(152)[1] - P(10)[1]);
+  let cx = 0, cy = 0; for (const i of OVAL) { cx += P(i)[0]; cy += P(i)[1]; } cx /= OVAL.length; cy /= OVAL.length;
+  const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
+  // 부드러운 타원 가림판
+  const ellipse = (g, x, y, rx, ry) => {
+    g.save(); g.translate(x, y); g.scale(rx, ry);
+    const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.62, 'rgba(0,0,0,1)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore();
+  };
+  const noseY = P(2)[1], chinY = P(152)[1], mouthX = (P(61)[0] + P(291)[0]) / 2;
+  const mouthMask = (g) => ellipse(g, mouthX, (noseY + chinY) / 2 + faceH * 0.04, faceW * 0.4, (chinY - noseY) * 0.72);
+  const eyeMask = (g) => {
+    for (const [a, b] of [[33, 133], [362, 263]]) {
+      const ex = (P(a)[0] + P(b)[0]) / 2, ey = (P(a)[1] + P(b)[1]) / 2, ew = Math.abs(P(b)[0] - P(a)[0]);
+      ellipse(g, ex, ey, ew * 0.95, ew * 0.62);
+    }
+  };
+  // 받은 사진마다: 바탕 사진에 맞춰 옮겨 그린 뒤 해당 부분만 남긴 조각을 미리 만들어 둔다
+  const patches = {};
+  for (const [k, f] of Object.entries(frames || {})) {
+    if (!f || !f.bmp || !f.face) continue;
+    const c = mk(), g = c.getContext('2d');
+    g.setTransform(...similarity(f.face, pts, STABLE)); g.drawImage(f.bmp, 0, 0); g.setTransform(1, 0, 0, 1, 0, 0);
+    // 가림판은 따로 그린 뒤 한 번에 적용 (두 눈처럼 모양이 여러 개여도 서로 지우지 않게)
+    const m = mk(); (k === 'blink' ? eyeMask : mouthMask)(m.getContext('2d'));
+    g.globalCompositeOperation = 'destination-in'; g.drawImage(m, 0, 0);
+    patches[k] = c;
+  }
+  const cv = mk(), g = cv.getContext('2d');
+  function render({ open = 0, blink = 0, t = 0 } = {}) {
+    g.globalAlpha = 1; g.clearRect(0, 0, W, H); g.drawImage(base, 0, 0);
+    const half = patches.half, wide = patches.open || patches.round || half, round = patches.round || wide;
+    // 소리가 작으면 반쯤, 크면 크게. 크게 벌릴 때는 음절(약 1/6초)마다 '아'와 '오'를 번갈아 써서 단조롭지 않게
+    const a1 = smooth(0.08, 0.3, open), a2 = smooth(0.42, 0.72, open);
+    if (half && a1 > 0.01) { g.globalAlpha = a1; g.drawImage(half, 0, 0); }
+    else if (!half && wide && a1 > 0.01) { g.globalAlpha = a1 * 0.6; g.drawImage(wide, 0, 0); }
+    if (a2 > 0.01 && wide) {
+      const syl = Math.floor(t * 6), useRound = patches.round && patches.open && (syl * 7919) % 5 < 2;
+      g.globalAlpha = a2; g.drawImage(useRound ? round : wide, 0, 0);
+    }
+    if (patches.blink && blink > 0.01) { g.globalAlpha = blink; g.drawImage(patches.blink, 0, 0); }
+    g.globalAlpha = 1;
+    return cv;
+  }
+  return { canvas: cv, render, width: W, height: H, face: { x: cx, y: cy, w: faceW, h: faceH }, frames: Object.keys(patches) };
 }
