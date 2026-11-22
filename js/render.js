@@ -143,7 +143,8 @@ export function drawScene(ctx, p, s, local, assets, withText = true) {
   const prog = clamp(local / s.duration);
   const a = s.mediaId && assets.get(s.mediaId);
   let ok = false;
-  if (s.talk && assets.talker && assets.talker.t !== undefined) { drawTalkScene(ctx, assets.talker.tk, prog); ok = true; }
+  const tks = talkerFor(assets, s);
+  if (s.talk && tks && tks.t !== undefined) { drawTalkScene(ctx, tks.tk, prog); ok = true; }
   else if (a) { try { ok = drawMedia(ctx, s, a, prog); } catch { ok = false; } }
   if (!ok) {
     const c = BGS[s.bg % BGS.length];
@@ -166,8 +167,10 @@ function drawTexts(ctx, p, s, local, lower = 0) {
 export const presenterOn = (p, assets) => !!(p.char && p.char.show && p.char.imageId && (assets.talker || assets.get(p.char.imageId)));
 // 말하는 사진(assets.talker): 이 시각의 표정으로 한 번만 그려 두고 구석 창·말하는 장면이 같이 쓴다
 const ampAt = (assets, t) => { const a = assets.talk, k = Math.floor(t * 30); return a && k < a.length ? a[k] : 0; };
-function talkFrame(assets, t) {
-  const tk = assets.talker; if (!tk) return null;
+// 장면의 자세(s.pose) 사진이 있으면 그것으로, 없으면 대표 사진으로
+function talkerFor(assets, s) { return (s && s.pose && assets.poses && assets.poses[s.pose]) || assets.talker; }
+function talkFrame(assets, t, s) {
+  const tk = talkerFor(assets, s); if (!tk) return null;
   if (tk.t !== t) { tk.t = t; tk.tk.render(poseAt(t, ampAt(assets, t))); }
   return tk.tk;
 }
@@ -192,7 +195,7 @@ export function presenterXY(p) {
 export function drawPresenter(ctx, p, t, assets) {
   const c = p.char;
   if (!presenterOn(p, assets)) return;
-  const tk = talkFrame(assets, t), a = tk ? null : assets.get(c.imageId);
+  const tk = talkFrame(assets, t, p.scenes.length ? p.scenes[sceneAt(p, t).i] : null), a = tk ? null : assets.get(c.imageId);
   const amp = ampAt(assets, t);
   const d = 230 * (c.scale || 1), r = d / 2 * back(clamp(t / 0.5)) * (1 + amp * 0.05);
   const { x: cx, y: cy0 } = presenterXY(p), cy = cy0 - amp * 6 * Math.abs(Math.sin(t * 9));
@@ -219,7 +222,8 @@ export function drawFrame(ctx, p, t, assets) {
   if (!p.scenes.length) return;
   const { i, local } = sceneAt(p, t);
   const s = p.scenes[i], tr = s.transition || p.transition;
-  talkFrame(assets, t);
+  talkFrame(assets, t, s);
+  if (i > 0 && local < TD) talkFrame(assets, t, p.scenes[i - 1]); // 전환 중에는 앞 장면 자세도
   const ch = presenterOn(p, assets) && !s.talk; // 장면마다 따로 고른 전환이 있으면 그것을 쓴다
   if (i > 0 && tr !== 'none' && local < TD) {
     const q = ease(local / TD), prev = p.scenes[i - 1];

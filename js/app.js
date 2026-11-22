@@ -321,6 +321,7 @@ async function aiSheet(create, preChar) {
           duration: autoDur(sc.narration || sc.caption), bg: i % (BGS.length - 1), motion: MOTIONS[i % 4],
         }));
         if (ch && ch.face && $('#tk', L.el)?.checked) { p.scenes[0].talk = true; if (p.scenes.length > 2) p.scenes[p.scenes.length - 1].talk = true; }
+        if (ch) autoPoses(p);
         L.close(); create(p);
       } catch (e) { console.warn(e); toast(e.message || 'AI 요청에 실패했어요'); busy = false; btn.textContent = '대본 만들기'; }
     },
@@ -525,6 +526,7 @@ function sceneSheet() {
   const vdur = s.mediaKind === 'video' ? (E.assets.get(s.mediaId)?.dur || 0) : 0;
   const L = sheet(`장면 ${E.sel + 1} 편집`, `
     ${E.assets.talker ? `<label>장면 화면</label>${chips('talk', [['0', '🖼 그림·영상'], ['1', `🗣 ${esc(p.char.name)}가 말하기`]], s.talk ? '1' : '0')}` : ''}
+    ${p.char && (p.char.poses || []).length ? `<label>${esc(p.char.name)}의 자세</label>${chips('pose', p.char.poses.map((x) => [x.key, poseLabel(x.key)]), s.pose || '')}` : ''}
     <label>큰 자막 (장면 제목)</label><textarea id="tx" rows="2" placeholder="자막을 입력하세요">${esc(s.text)}</textarea>
     <label>대사 (화면 아래 대사 자막 · AI 음성이 읽음 · 비우면 자막을 읽음)</label><textarea id="nr" rows="2" placeholder="대본 문장 전체">${esc(s.narration || '')}</textarea>
     <label>길이 <b id="dv">${s.duration}</b>초</label><input type="range" id="du" min="1" max="20" step="0.5" value="${s.duration}">
@@ -651,6 +653,54 @@ function charPrompt(ch) {
 - 바닥·그림자·글자·로고 없이 캐릭터만
 - 세로 이미지, 캐릭터가 화면 가운데에 크게`;
 }
+// 아바타 사진 세트: 같은 인물의 여러 자세. 장면마다 어울리는 자세로 말하게 한다 (주문서 순서 = 넣는 순서)
+const POSES = [
+  ['hello', '인사', '한 손을 들어 손을 흔들며 밝게 웃는 모습'],
+  ['explain', '설명', '한 손을 앞으로 펼쳐 내밀며 차분히 설명하는 모습'],
+  ['point', '가리키기', '검지로 화면 옆 위쪽을 가리키며 말하는 모습'],
+  ['thumb', '엄지척', '엄지를 들어 올리며 자신감 있게 웃는 모습'],
+  ['think', '생각', '한 손을 턱에 대고 궁금한 듯 생각하는 표정'],
+  ['wow', '놀람', '눈을 크게 뜨고 두 손을 펼친 놀란 표정'],
+  ['smile', '웃음', '두 팔을 자연스럽게 내리고 활짝 웃는 얼굴'],
+  ['serious', '진지', '두 손을 가슴 앞에 모으고 진지하게 말하는 표정'],
+  ['count', '숫자', '손가락 하나를 세워 보이며 "첫째"를 말하는 모습'],
+  ['bye', '감사', '두 손을 모으고 고개를 살짝 숙여 감사 인사하며 미소 짓는 모습'],
+];
+const poseLabel = (k) => (POSES.find((x) => x[0] === k) || [, k])[1];
+function posePrompt(c, withPhoto) {
+  return `같은 인물(캐릭터)의 아바타 사진 ${POSES.length}장을 만들어 주세요. 한 장에 모으지 말고 각각 별도의 이미지로 1장씩, 아래 번호 순서대로 총 ${POSES.length}장입니다.
+
+[인물]
+${withPhoto ? '- 첨부한 사진 속 인물과 똑같은 얼굴·머리·체형·옷으로 (다른 사람처럼 바뀌지 않게)\n' : ''}- 이름: ${c.name || '(이름 없음)'}
+- 외형: ${(c.look || '').trim() || (withPhoto ? '첨부한 사진과 같게' : '(외형 설명을 적어 주세요)')}
+
+[공통 조건 — 영상에서 입·눈을 움직이게 하므로 꼭 지켜 주세요]
+- 세로 9:16, 허리 위 상반신이 화면 가운데에
+- 얼굴은 카메라 정면을 보고 또렷하게, 손·머리카락·소품이 얼굴(특히 입)을 가리지 않게
+- 입은 자연스럽게 다물거나 살짝 웃는 정도로
+- ${POSES.length}장 모두 같은 옷·같은 조명·같은 단순한 연회색 배경
+- 글자·로고·워터마크 없이
+
+[${POSES.length}장]
+${POSES.map(([, label, d], i) => `${i + 1}. ${label}: ${d}`).join('\n')}`;
+}
+// 장면마다 어울리는 자세: 첫 장면 인사, 마지막 감사, 물음 → 생각, 감탄 → 놀람, 나머지는 돌아가며
+function autoPoses(p) {
+  const ps = p.char && p.char.poses; if (!ps || ps.length < 2) return;
+  const has = (k) => ps.some((x) => x.key === k);
+  const cycle = ['explain', 'point', 'thumb', 'smile', 'serious', 'count'].filter(has);
+  let n = 0;
+  p.scenes.forEach((s, i) => {
+    const t = `${s.text || ''} ${s.narration || ''}`;
+    let k = i === 0 && has('hello') ? 'hello'
+      : i === p.scenes.length - 1 && p.scenes.length > 2 && has('bye') ? 'bye'
+      : /[?？]|왜|어떻게|뭘까|무엇/.test(t) && has('think') ? 'think'
+      : /[!！]|놀라|충격|대박|반전/.test(t) && has('wow') ? 'wow'
+      : /첫째|첫 번째|하나|둘째|두 번째|셋째|세 번째|넷째|다섯/.test(t) && has('count') ? 'count'
+      : cycle.length ? cycle[n++ % cycle.length] : ps[0].key;
+    s.pose = k;
+  });
+}
 const charUrls = new Map(); // 캐릭터 그림 미리보기 주소 (다시 그릴 때 재사용)
 async function charImgUrl(imageId) {
   if (!imageId) return '';
@@ -672,6 +722,8 @@ async function charSheet(orig) {
   const { VOICES } = await import('./ai.js');
   const projects = orig ? (await db.all('projects')).filter((p) => p.char && p.char.id === c.id) : [];
   let pendingImage = null, pendingPhoto = null; // 저장 전에 넣은 그림 (저장하지 않고 닫으면 버린다)
+  c.poses = (c.poses || []).slice();
+  const pendingPoses = new Set(), removedPoses = new Set();
   const L = sheet(orig ? `🧑 ${esc(c.name || '캐릭터')}` : '🧑 새 캐릭터', `
     <div class="charimg"><img id="ci" alt="" style="display:none"><span id="cn" class="mut">아직 전신 그림이 없어요</span></div>
     <label>어떤 캐릭터인가요? (짧게 적고 AI에게 맡기기)</label><input type="text" id="cc" placeholder="예) 공부 습관을 알려 주는 귀여운 새싹 화분">
@@ -682,18 +734,29 @@ async function charSheet(orig) {
     <label>목소리 (AI 음성)</label><select id="cvc">${VOICES.map((v) => `<option ${v === c.voice ? 'selected' : ''}>${v}</option>`).join('')}</select>
     <label>전신 그림 — 보내기·복사로 이미지 AI에 주문한 뒤 받은 그림을 넣으세요 (단색 배경은 자동으로 지워요)</label>
     <div class="row"><button data-act="send">📤 보내기</button><button data-act="copy">📋 복사</button><button class="pri" data-act="put">🖼 ${c.imageId ? '교체' : '넣기'}</button></div>
+    <label>아바타 사진 세트 — 다양한 표정·몸짓 ${POSES.length}장 (장면마다 다른 자세로 말해 더 자연스러워요)</label>
+    <div class="mut">📤 보내기로 Grok·ChatGPT·Gemini에 ${POSES.length}장을 한 번에 주문하고, 받은 사진들을 🖼 넣기로 한꺼번에 고르세요 (받은 순서대로 1~10번이 돼요). 위 그림이 있으면 그 얼굴로 만들도록 함께 보내요.</div>
+    <div class="row" style="margin-top:8px"><button data-act="psend">📤 보내기</button><button data-act="pcopy">📋 복사</button><button class="pri" data-act="pput">🖼 넣기</button></div>
+    <div class="poses" id="pl"></div>
     <div class="row" style="margin-top:16px"><button class="pri" data-act="save">저장</button>${orig ? '<button data-act="make">🎬 이 캐릭터로 영상</button>' : ''}</div>
     ${orig ? `<div class="mut" style="margin-top:8px">이 캐릭터로 만든 영상 ${projects.length}개</div><div class="row" style="margin-top:8px"><button class="danger" data-act="del">캐릭터 삭제</button></div>` : ''}`);
   const read = () => { c.name = $('#cnm', L.el).value.trim(); c.look = $('#clk', L.el).value.trim(); c.persona = $('#cps', L.el).value.trim(); c.voice = $('#cvc', L.el).value; };
   const showImg = async (id) => { const u = await charImgUrl(id); if (u) { $('#ci', L.el).src = u; $('#ci', L.el).style.display = ''; $('#cn', L.el).style.display = 'none'; } };
   showImg(c.imageId);
-  L.onClose = () => { if (pendingImage) db.del('media', pendingImage); if (pendingPhoto) db.del('media', pendingPhoto); };
+  const drawPoses = () => {
+    const box = $('#pl', L.el);
+    box.innerHTML = c.poses.map((x, i) => `<div class="pose"><img data-i="${i}" alt=""><span>${i + 1}. ${esc(poseLabel(x.key))}</span><button data-act="prm" data-i="${i}">✕</button></div>`).join('') || '<span class="mut">아직 사진 세트가 없어요</span>';
+    box.querySelectorAll('img[data-i]').forEach(async (im) => { im.src = await charImgUrl(c.poses[+im.dataset.i].id); });
+  };
+  drawPoses();
+  L.onClose = () => { if (pendingImage) db.del('media', pendingImage); if (pendingPhoto) db.del('media', pendingPhoto); for (const id of pendingPoses) db.del('media', id); };
   const save = async () => {
     read();
     if (!c.name) { toast('이름을 입력해 주세요'); return false; }
     const old = orig && orig.imageId !== c.imageId ? [orig.imageId, orig.photoId].filter(Boolean) : [];
-    c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null; pendingPhoto = null;
-    const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId] : [])));
+    old.push(...removedPoses);
+    c.updatedAt = Date.now(); await db.put('characters', c); pendingImage = null; pendingPhoto = null; pendingPoses.clear(); removedPoses.clear();
+    const used = new Set((await db.all('projects')).flatMap((p) => (p.char ? [p.char.imageId, p.char.photoId, ...(p.char.poses || []).map((x) => x.id)] : [])));
     for (const id of old) if (!used.has(id)) db.del('media', id);
     Object.assign(orig || {}, c);
     return true;
@@ -717,6 +780,29 @@ async function charSheet(orig) {
       busy = false; b.textContent = '🤖 AI로 캐릭터 설정 만들기';
     },
     send: () => { read(); sendText(charPrompt(c)); },
+    psend: () => { read(); const ref = c.photoId || c.imageId; ref ? sendWithImage(posePrompt(c, true), ref) : sendText(posePrompt(c, false)); },
+    pcopy: () => { read(); copyText(posePrompt(c, !!(c.photoId || c.imageId)), `사진 ${POSES.length}장 주문서를 복사했어요`); },
+    pput: async () => {
+      const files = await pickFiles('image/*', true); if (!files.length) return;
+      files.sort((a, b) => a.lastModified - b.lastModified || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      let ok = 0, bad = 0;
+      for (const f of files) {
+        toast(`얼굴을 찾는 중… ${ok + bad + 1} / ${files.length}`);
+        try {
+          const blob = await shrinkPhoto(f, 1280), face = await faceOfBlob(blob);
+          if (!face) { bad++; continue; }
+          const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'pose.jpg' }); pendingPoses.add(id);
+          const used = new Set(c.poses.map((x) => x.key));
+          const key = (POSES.find(([k], j) => j >= c.poses.length && !used.has(k)) || POSES.find(([k]) => !used.has(k)) || POSES[c.poses.length % POSES.length])[0];
+          c.poses.push({ id, face, key }); ok++;
+        } catch (e) { console.warn(e); bad++; }
+      }
+      // 대표 그림이 없으면 첫 사진을 대표로
+      if (!c.imageId && c.poses[0]) { const r = await db.get('media', c.poses[0].id); const { blob } = await cutout(new File([r.blob], 'p.jpg', { type: 'image/jpeg' })); const id = uid(); await db.put('media', { id, blob, kind: 'image', name: 'character.png' }); pendingImage = id; c.imageId = id; c.photoId = c.poses[0].id; c.face = c.poses[0].face; showImg(id); }
+      drawPoses();
+      toast(`${ok}장을 넣었어요${bad ? ` · 얼굴을 찾지 못한 ${bad}장은 뺐어요 (정면 얼굴이 또렷해야 해요)` : ''}. 저장을 눌러 주세요`);
+    },
+    prm: (b) => { const [x] = c.poses.splice(+b.dataset.i, 1); if (pendingPoses.delete(x.id)) db.del('media', x.id); else removedPoses.add(x.id); drawPoses(); },
     copy: () => { read(); copyText(charPrompt(c), '전신 그림 프롬프트를 복사했어요'); },
     put: async () => {
       const [f] = await pickFiles('image/*'); if (!f) return;
@@ -747,10 +833,10 @@ async function charSheet(orig) {
   });
 }
 // 프로젝트에 캐릭터 붙이기 (그림·말투는 복사해 둬서 캐릭터를 지워도 영상은 그대로)
-const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
+const charOf = (c) => ({ id: c.id, imageId: c.imageId, photoId: c.photoId || null, face: c.face || null, poses: (c.poses || []).slice(), name: c.name, look: c.look, persona: c.persona, voice: c.voice, show: !!c.face, side: 'left', scale: 1, v2: true, v3: true });
 // 말하는 사진 준비: 사진 줄이기, 얼굴 찾기, 편집기에 말하는 엔진 붙이기
-async function shrinkPhoto(file) {
-  const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+async function shrinkPhoto(file, max = 1600) {
+  const bmp = await createImageBitmap(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
   return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.92));
@@ -774,6 +860,12 @@ async function setupTalker(E) {
     const { createTalker } = await import('./talk.js');
     const bmp = await createImageBitmap(rec.blob);
     E.assets.talker = { tk: createTalker(bmp, c.face), t: undefined };
+    // 자세 사진들: 장면의 s.pose 로 고른다
+    const poses = {};
+    for (const x of c.poses || []) {
+      try { const r = await db.get('media', x.id); if (!r || cur !== E) continue; poses[x.key] = { tk: createTalker(await createImageBitmap(r.blob), x.face), t: undefined }; } catch (e) { console.warn(e); }
+    }
+    E.assets.poses = poses;
   } catch (e) { console.warn('말하는 캐릭터를 준비하지 못했어요', e); }
 }
 
@@ -1098,9 +1190,9 @@ async function styleSheet() {
   bindChips(L.el, async (k, v) => {
     if (k === 'char') {
       const x = chars.find((y) => y.id === v);
-      if (!v) { p.char = null; E.assets.talker = null; p.scenes.forEach((x) => { x.talk = false; }); }
+      if (!v) { p.char = null; E.assets.talker = null; E.assets.poses = null; p.scenes.forEach((x) => { x.talk = false; x.pose = null; }); }
       else if (x && (!c || c.id !== x.id)) {
-        p.char = charOf(x);
+        p.char = charOf(x); autoPoses(p);
         try { const a = await loadAsset(x.imageId); if (a) E.assets.set(x.imageId, a); } catch {}
         await setupTalker(E);
       }
