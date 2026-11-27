@@ -275,6 +275,39 @@ public class MainActivity extends Activity {
             }
         }
 
+        /** 백업 파일: 다운로드/ShortsMaker 폴더에 저장하고 공유 창(구글 드라이브·카톡 등)을 연다 */
+        @JavascriptInterface
+        public synchronized String backupEnd() {
+            try {
+                outStream.close();
+                outStream = null;
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, outName);
+                v.put(MediaStore.Downloads.MIME_TYPE, outMime);
+                v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ShortsMaker");
+                v.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+                if (uri == null) return "저장 위치를 만들지 못했어요";
+                try (InputStream in = new FileInputStream(outFile); OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    byte[] buf = new byte[1 << 16];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                v.clear();
+                v.put(MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, v, null, null);
+                outFile.delete();
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType(outMime);
+                send.putExtra(Intent.EXTRA_STREAM, uri);
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                runOnUiThread(() -> startActivity(Intent.createChooser(send, "백업 파일 보관하기")));
+                return "다운로드/ShortsMaker 폴더에 저장했어요. 구글 드라이브 등에도 올려 두세요";
+            } catch (Exception e) {
+                return "백업 저장에 실패했어요: " + e.getMessage();
+            }
+        }
+
         /** action: "save"(갤러리에 저장) 또는 "share"(저장 후 공유 창 열기). 사용자에게 보여줄 문구를 돌려준다. */
         @JavascriptInterface
         public synchronized String fileEnd(String action) {

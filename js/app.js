@@ -271,6 +271,57 @@ function newSheet() {
     },
   });
 }
+/* ───────── 백업·복원 ─────────
+   파일 구조: "RSMBAK1\n" + 머리말 길이(12자리) + "\n" + 머리말 JSON(프로젝트·캐릭터·미디어 목록) + 미디어 바이트를 차례로 이어 붙임 */
+const BAK_MAGIC = 'RSMBAK1\n';
+async function makeBackup(say) {
+  try {
+    say('백업 파일을 만드는 중…');
+    const projects = await db.all('projects'), characters = await db.all('characters'), media = await db.all('media');
+    let off = 0; const list = [];
+    for (const m of media) { if (!m.blob) continue; list.push({ id: m.id, kind: m.kind, name: m.name, type: m.blob.type || '', size: m.blob.size, off }); off += m.blob.size; }
+    const head = new TextEncoder().encode(JSON.stringify({ v: 1, created: Date.now(), app: 'reels-shorts-maker', projects, characters, media: list }));
+    const blob = new Blob([BAK_MAGIC, String(head.length).padStart(12, '0') + '\n', head, ...media.filter((m) => m.blob).map((m) => m.blob)], { type: 'application/octet-stream' });
+    const d = new Date(), name = `릴스쇼츠-백업-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.rsmbak`;
+    const info = `영상 ${projects.length}개 · 캐릭터 ${characters.length}명 · ${(blob.size / 1048576).toFixed(1)}MB`;
+    if (NATIVE && NATIVE.backupEnd) {
+      say(`백업 파일을 저장하는 중… (${info})`);
+      const u8 = new Uint8Array(await blob.arrayBuffer()), STEP = 3 * 256 * 1024;
+      NATIVE.fileBegin(name, 'application/octet-stream');
+      for (let o = 0; o < u8.length; o += STEP) {
+        let bin = ''; const part = u8.subarray(o, o + STEP);
+        for (let i = 0; i < part.length; i += 32768) bin += String.fromCharCode.apply(null, part.subarray(i, i + 32768));
+        NATIVE.fileChunk(btoa(bin));
+      }
+      const r = NATIVE.backupEnd(); say(`${r} (${info})`); toast(r);
+    } else {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      say(`백업 파일을 내려받았어요 (${info})`);
+    }
+  } catch (e) { console.warn(e); say(`백업에 실패했어요: ${e.message || e}`); }
+}
+async function restoreBackup() {
+  const [f] = await pickFiles('*/*'); if (!f) return;
+  try {
+    const magic = await f.slice(0, 8).text();
+    if (magic !== BAK_MAGIC) return toast('릴스·쇼츠 메이커 백업 파일(.rsmbak)이 아니에요');
+    const len = +(await f.slice(8, 20).text()), base = 21 + len;
+    const head = JSON.parse(await f.slice(21, base).text());
+    if (!(await confirmDlg(`백업 파일에서 영상 ${head.projects.length}개, 캐릭터 ${head.characters.length}명을 불러올까요? 이미 있는 같은 영상·캐릭터는 백업 내용으로 바뀌어요.`, '불러오기', '취소'))) return;
+    let n = 0;
+    for (const m of head.media) {
+      if (++n % 10 === 0) toast(`불러오는 중… ${n} / ${head.media.length}`);
+      const blob = new Blob([await f.slice(base + m.off, base + m.off + m.size).arrayBuffer()], { type: m.type });
+      await db.put('media', { id: m.id, kind: m.kind, name: m.name, blob });
+    }
+    for (const c of head.characters) await db.put('characters', c);
+    for (const p of head.projects) await db.put('projects', p);
+    toast(`영상 ${head.projects.length}개, 캐릭터 ${head.characters.length}명을 불러왔어요`);
+    showHome();
+  } catch (e) { console.warn(e); toast(`백업을 불러오지 못했어요: ${e.message || e}`); }
+}
+
 /* ───────── 설정(API 키)·AI 대본 ───────── */
 const getKey = () => { try { return localStorage.getItem('key.gemini') || ''; } catch { return ''; } };
 const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest'];
@@ -282,10 +333,15 @@ function settingsSheet(done) {
     <div class="mut" style="margin-top:6px">키를 여러 개 넣으면 한 키가 한도에 걸리거나 잘못됐을 때 자동으로 다음 키를 씁니다. 한도는 키가 아니라 Google 프로젝트 단위라서, 서로 다른 프로젝트(또는 계정)에서 만든 키여야 효과가 있습니다.</div>
     <label>대본 작성 모델 — 고른 모델이 한도에 걸리면 나머지를 자동으로 차례로 씁니다</label>${chips('model', GEMINI_MODELS.map((m) => [m, m.replace('gemini-', '')]), geminiModel())}
     <div class="mut" style="margin-top:10px">🔒 키는 이 기기에만 저장되고, Google로만 직접 전송됩니다. 공용 기기에서는 입력하지 마세요.</div>
+    <label>백업·휴대폰 옮기기 — 내 영상·캐릭터·사진·음성을 파일 하나로 (API 키는 빠져요)</label>
+    <div class="row"><button data-act="backup">💾 백업 파일 만들기</button><button data-act="restore">📂 백업 불러오기</button></div>
+    <div class="mut" id="bk" style="margin-top:6px">휴대폰을 바꾸거나 앱을 지우기 전에 백업 파일을 만들어 구글 드라이브 등에 올려 두세요. 새 휴대폰에서 앱을 깔고 📂 백업 불러오기로 그대로 되살아나요.</div>
     <div class="row" style="margin-top:12px"><button class="pri" data-act="ok">저장</button></div>`);
   let model = geminiModel();
   bindChips(L.el, (k, v) => { model = v; });
   wire(L, {
+    backup: () => makeBackup((m) => { const el = $('#bk', L.el); if (el) el.textContent = m; }),
+    restore: async () => { L.close(); await restoreBackup(); },
     ok: () => {
       try { localStorage.setItem('model.gemini', model); } catch {}
       const v = $('#k1', L.el).value.split(/[\s,]+/).filter(Boolean).join('\n');
